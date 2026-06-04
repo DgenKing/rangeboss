@@ -1,0 +1,76 @@
+export type Candle = {
+  openTime: number;
+  closeTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type Levels = {
+  coin: string;
+  computedAt: number;
+  forUtcDay: string;
+  rangeHigh: number;
+  rangeLow: number;
+  swingHigh: number | null;
+  swingLow: number | null;
+};
+
+export type MarketEvent = {
+  id?: number;
+  type: 'LEVEL_TOUCH' | 'LEVEL_BREAK' | 'CONFIRMED_SIGNAL';
+  coin: string;
+  side: 'RESISTANCE' | 'SUPPORT';
+  levelName: 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow';
+  levelPrice: number;
+  candleCloseTime: number;
+  price: number;
+  direction?: 'LONG' | 'SHORT';
+  entry?: number;
+  stop?: number;
+  target?: number;
+  score?: number;
+  notified: boolean;
+};
+
+export type Status = {
+  coin: string;
+  coins: string[];
+  lastCandleTime: number | null;
+  socketHealthy: boolean;
+  currentPrice: number | null;
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_MONITOR_API ?? 'http://localhost:8787';
+
+export async function getCoins(): Promise<string[]> {
+  return fetchJson<string[]>('/api/coins');
+}
+
+export async function getDashboardData(coin: string) {
+  const q = `coin=${encodeURIComponent(coin)}`;
+  const [levels, candles, events, status] = await Promise.all([
+    fetchJson<Levels | null>(`/api/levels?${q}`),
+    fetchJson<Candle[]>(`/api/candles?${q}&limit=300`),
+    fetchJson<MarketEvent[]>(`/api/events?${q}&limit=50`),
+    fetchJson<Status>(`/api/status?${q}`),
+  ]);
+
+  return { levels, candles, events, status };
+}
+
+// "xyz:SP500" -> "SP500" for display.
+export function displayCoin(coin: string): string {
+  return coin.includes(':') ? coin.split(':').slice(1).join(':') : coin;
+}
+
+async function fetchJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`${path} failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<T>;
+}

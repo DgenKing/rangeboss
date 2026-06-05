@@ -118,6 +118,7 @@ function computeAndStoreLevels(coin: string) {
     coin,
     swingLookbackDays: config.swingLookbackDays,
     pivotWindow: config.pivotWindow,
+    swingMinDistancePct: config.swingMinDistancePct,
   });
   activeLevels.set(coin, levels);
   store.saveLevels(levels);
@@ -145,6 +146,11 @@ async function handleClosedCandle(coin: string, interval: string, candle: Candle
 
   const levels = activeLevels.get(coin);
   if (!levels) return;
+
+  // Trace the exact levels the engine compares against, so signals can be tied
+  // to the same Levels the chart shows (single source of truth: activeLevels).
+  const ts = new Date(candle.closeTime).toISOString().slice(5, 16);
+  console.log(`[eval] ${coin} ${ts} close=${candle.close} | rangeHigh=${levels.rangeHigh} rangeLow=${levels.rangeLow} swingHigh=${levels.swingHigh} swingLow=${levels.swingLow}`);
 
   const recentCandles = store.getRecentCandles(coin, config.candleInterval, 40);
   const recentEvents = store.getRecentEvents(coin, 200);

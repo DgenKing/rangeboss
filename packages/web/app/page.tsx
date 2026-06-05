@@ -305,7 +305,7 @@ function EventRow({ event }: { event: MarketEvent }) {
         </div>
         <div className="flex items-center gap-1 text-xs text-[#62666a]">
           <Clock className="h-3.5 w-3.5" aria-hidden />
-          {formatUtcTime(event.candleCloseTime)}
+          {formatUtcDateTime(event.candleCloseTime)}
         </div>
       </div>
 
@@ -340,8 +340,9 @@ function formatPrice(value: number | undefined) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
 }
 
-function formatUtcTime(timestamp: number) {
-  return new Date(timestamp).toISOString().slice(11, 16);
+function formatUtcDateTime(timestamp: number) {
+  // "06-04 14:15" — date + time so prior-day events in the feed are distinguishable.
+  return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
 }
 
 function formatTimes(timestamp: number | null) {

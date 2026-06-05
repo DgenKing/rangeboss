@@ -26,6 +26,8 @@ export const config = {
   backfillRequestSpacingMs: 300,
   swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
   pivotWindow: 2,
+  swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
+
   touchTolerance: 0.0008,      // 0.08%
   touchCooldownMinutes: 60,
   confirmWithinCandles: 3,

@@ -7,6 +7,7 @@ export interface ComputeLevelsOptions {
   now?: number;
   swingLookbackDays?: number;
   pivotWindow?: number;
+  swingMinDistancePct?: number;
 }
 
 export function computeLevels(
@@ -16,6 +17,7 @@ export function computeLevels(
     now = Date.now(),
     swingLookbackDays = 90,
     pivotWindow = 2,
+    swingMinDistancePct = 0,
   }: ComputeLevelsOptions,
 ): Levels {
   const candles = [...dailyCandles].sort((a, b) => a.openTime - b.openTime);
@@ -33,6 +35,9 @@ export function computeLevels(
   const earliestOpenTime = swingLookbackDays > 0
     ? yesterday.openTime - swingLookbackDays * DAY_MS
     : -Infinity;
+  // A swing only counts if it is meaningfully beyond the range, not the same peak.
+  const swingHighThreshold = rangeHigh * (1 + swingMinDistancePct);
+  const swingLowThreshold = rangeLow * (1 - swingMinDistancePct);
 
   let swingHigh: number | null = null;
   let swingLow: number | null = null;
@@ -40,11 +45,11 @@ export function computeLevels(
   for (let i = yesterdayIndex; i >= 0; i -= 1) {
     if (candles[i].openTime < earliestOpenTime) break;
 
-    if (swingHigh === null && isPivotHigh(candles, i, pivotWindow) && candles[i].high > rangeHigh) {
+    if (swingHigh === null && isPivotHigh(candles, i, pivotWindow) && candles[i].high > rangeHigh && candles[i].high >= swingHighThreshold) {
       swingHigh = candles[i].high;
     }
 
-    if (swingLow === null && isPivotLow(candles, i, pivotWindow) && candles[i].low < rangeLow) {
+    if (swingLow === null && isPivotLow(candles, i, pivotWindow) && candles[i].low < rangeLow && candles[i].low <= swingLowThreshold) {
       swingLow = candles[i].low;
     }
 

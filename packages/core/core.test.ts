@@ -36,6 +36,34 @@ describe('computeLevels', () => {
     expect(levels.swingLow).toBe(78);
   });
 
+  test('rejects a swing that is not at least swingMinDistancePct beyond the range', () => {
+    // Mirrors the HYPE-at-ATH case: the nearest pivot high is barely above the
+    // range high (fake precision) so swingHigh must be null; the swing low sits
+    // well below the range low and survives.
+    const candles = dailyFixture([
+      [99, 96],
+      [99, 94],
+      [98, 70],     // pivot low 70, well below range low -> valid swingLow
+      [99, 94],
+      [100.3, 92],  // pivot high 100.3, only 0.3% above range high -> rejected
+      [99, 96],
+      [98, 97],
+      [100, 95],    // yesterday: rangeHigh 100, rangeLow 95
+    ]);
+
+    const levels = computeLevels(candles, {
+      coin: 'ETH',
+      now,
+      swingLookbackDays: 0,
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,
+    });
+
+    expect(levels.rangeHigh).toBe(100);
+    expect(levels.swingHigh).toBeNull();
+    expect(levels.swingLow).toBe(70);
+  });
+
   test('returns null for missing swing levels inside the lookback', () => {
     const candles = dailyFixture([
       [100, 90],

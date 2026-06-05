@@ -39,7 +39,7 @@ export default function Chart({ candles, levels, events, interval }: Props) {
 
   const intervalMs = useMemo(() => intervalToMs(interval), [interval]);
 
-  const markers = useMemo<SeriesMarker<Time>[]>(() => events.map((event) => ({
+  const markers = useMemo<SeriesMarker<Time>[]>(() => events.map((event): SeriesMarker<Time> => ({
     time: toChartTime(containingBarOpenTime(event.candleCloseTime, intervalMs)),
     position: event.side === 'SUPPORT' ? 'belowBar' : 'aboveBar',
     color: event.type === 'CONFIRMED_SIGNAL'

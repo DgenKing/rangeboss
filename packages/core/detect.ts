@@ -35,21 +35,25 @@ export function detectTouch(
   for (const level of levelRefs(levels)) {
     if (level.side === 'RESISTANCE') {
       if (candle.close > level.price * (1 + options.touchTolerance)) {
-        events.push(baseEvent('LEVEL_BREAK', levels, level, candle));
+        if (!recentEventWithinCooldown(recentEvents, 'LEVEL_BREAK', level, candle.closeTime, cooldownMs)) {
+          events.push(baseEvent('LEVEL_BREAK', levels, level, candle));
+        }
       } else if (
         candle.high >= level.price * (1 - options.touchTolerance) &&
         candle.close <= level.price &&
-        !recentTouchWithinCooldown(recentEvents, level, candle.closeTime, cooldownMs)
+        !recentEventWithinCooldown(recentEvents, 'LEVEL_TOUCH', level, candle.closeTime, cooldownMs)
       ) {
         events.push(baseEvent('LEVEL_TOUCH', levels, level, candle));
       }
     } else {
       if (candle.close < level.price * (1 - options.touchTolerance)) {
-        events.push(baseEvent('LEVEL_BREAK', levels, level, candle));
+        if (!recentEventWithinCooldown(recentEvents, 'LEVEL_BREAK', level, candle.closeTime, cooldownMs)) {
+          events.push(baseEvent('LEVEL_BREAK', levels, level, candle));
+        }
       } else if (
         candle.low <= level.price * (1 + options.touchTolerance) &&
         candle.close >= level.price &&
-        !recentTouchWithinCooldown(recentEvents, level, candle.closeTime, cooldownMs)
+        !recentEventWithinCooldown(recentEvents, 'LEVEL_TOUCH', level, candle.closeTime, cooldownMs)
       ) {
         events.push(baseEvent('LEVEL_TOUCH', levels, level, candle));
       }
@@ -249,14 +253,15 @@ function baseEvent(
   };
 }
 
-function recentTouchWithinCooldown(
+function recentEventWithinCooldown(
   recentEvents: MarketEvent[],
+  type: 'LEVEL_TOUCH' | 'LEVEL_BREAK',
   level: LevelRef,
   candleCloseTime: number,
   cooldownMs: number,
 ): boolean {
   return recentEvents.some((event) => (
-    event.type === 'LEVEL_TOUCH' &&
+    event.type === type &&
     event.side === level.side &&
     event.levelName === level.name &&
     candleCloseTime - event.candleCloseTime < cooldownMs

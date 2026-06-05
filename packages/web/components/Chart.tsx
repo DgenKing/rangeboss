@@ -9,20 +9,18 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type SeriesMarker,
   type Time,
 } from 'lightweight-charts';
 import { useEffect, useMemo, useRef } from 'react';
-import type { Candle, Levels, MarketEvent } from '../lib/api';
+import type { Candle, Levels } from '../lib/api';
 
 type Props = {
   candles: Candle[];
   levels: Levels | null;
-  events: MarketEvent[];
   interval: string;
 };
 
-export default function Chart({ candles, levels, events, interval }: Props) {
+export default function Chart({ candles, levels, interval }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -36,24 +34,6 @@ export default function Chart({ candles, levels, events, interval }: Props) {
     low: candle.low,
     close: candle.close,
   })), [candles]);
-
-  const intervalMs = useMemo(() => intervalToMs(interval), [interval]);
-
-  const markers = useMemo<SeriesMarker<Time>[]>(() => events.map((event): SeriesMarker<Time> => ({
-    time: toChartTime(containingBarOpenTime(event.candleCloseTime, intervalMs)),
-    position: event.side === 'SUPPORT' ? 'belowBar' : 'aboveBar',
-    color: event.type === 'CONFIRMED_SIGNAL'
-      ? '#b57b20'
-      : event.side === 'SUPPORT'
-        ? '#20885f'
-        : '#b94040',
-    shape: event.type === 'CONFIRMED_SIGNAL'
-      ? event.direction === 'LONG' ? 'arrowUp' : 'arrowDown'
-      : 'circle',
-    text: event.type === 'CONFIRMED_SIGNAL' ? `${event.direction} ${event.score ?? 0}` : event.levelName,
-  }))
-    // lightweight-charts requires markers in ascending time order; events arrive newest-first.
-    .sort((a, b) => (a.time as number) - (b.time as number)), [events, intervalMs]);
 
   useEffect(() => {
     didInitialFitRef.current = false;
@@ -122,7 +102,6 @@ export default function Chart({ candles, levels, events, interval }: Props) {
     if (!series) return;
 
     series.setData(chartData);
-    series.setMarkers(markers);
     priceLinesRef.current.forEach((line) => series.removePriceLine(line));
     priceLinesRef.current = [];
 
@@ -152,26 +131,11 @@ export default function Chart({ candles, levels, events, interval }: Props) {
       chartRef.current?.timeScale().fitContent();
       didInitialFitRef.current = true;
     }
-  }, [chartData, levels, markers]);
+  }, [chartData, levels]);
 
   return <div ref={containerRef} className="h-[540px] w-full overflow-hidden rounded border border-line bg-[#fbfaf6]" />;
 }
 
 function toChartTime(timestamp: number): Time {
   return Math.floor(timestamp / 1000) as Time;
-}
-
-function containingBarOpenTime(timestamp: number, intervalMs: number): number {
-  return Math.floor((timestamp - 1) / intervalMs) * intervalMs;
-}
-
-function intervalToMs(interval: string): number {
-  const match = /^(\d+)(m|h|d)$/.exec(interval);
-  if (!match) return 15 * 60 * 1000;
-
-  const value = Number(match[1]);
-  const unit = match[2];
-  if (unit === 'm') return value * 60 * 1000;
-  if (unit === 'h') return value * 60 * 60 * 1000;
-  return value * 24 * 60 * 60 * 1000;
 }

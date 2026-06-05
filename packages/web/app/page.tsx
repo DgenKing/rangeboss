@@ -149,7 +149,6 @@ export default function Page() {
             key={`${coin ?? 'none'}:${activeInterval}`}
             candles={data.candles}
             levels={data.levels}
-            events={data.events}
             interval={activeInterval}
           />
         </section>

@@ -44,7 +44,7 @@ export type Status = {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_MONITOR_API ?? 'http://localhost:8787';
-const CHART_CANDLE_LIMIT = 5000;
+export const CHART_CANDLE_LIMIT = 5000;
 
 export async function getCoins(): Promise<string[]> {
   return fetchJson<string[]>('/api/coins');
@@ -65,6 +65,15 @@ export async function getDashboardData(coin: string, interval: string) {
   ]);
 
   return { levels, candles, events, status };
+}
+
+export async function getCandles(
+  coin: string,
+  interval: string,
+  limit = CHART_CANDLE_LIMIT,
+): Promise<Candle[]> {
+  const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
+  return fetchJson<Candle[]>(`/api/candles?${q}`);
 }
 
 // "xyz:SP500" -> "SP500" for display.

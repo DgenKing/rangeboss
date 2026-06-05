@@ -1,6 +1,6 @@
 'use client';
 
-import { Clock, Wifi, WifiOff } from 'lucide-react';
+import { Clock, Palette, Wifi, WifiOff } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -139,8 +139,9 @@ export default function Page() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-sm">
-            <ThemeSelector theme={theme} onSelect={setTheme} />
+            <ThemeMenu theme={theme} onSelect={setTheme} />
             <StatusPill healthy={Boolean(data.status?.socketHealthy)} />
+            <Metric label="Hyperliquid" value={coin ? `${displayCoin(coin)} perpetual` : 'Loading…'} />
             <Metric label="Price" value={price === null ? 'Waiting' : formatPrice(price)} />
             <Metric label="Last Candle" value={formatTimes(data.status?.lastCandleTime ?? null)} wide />
           </div>
@@ -156,18 +157,13 @@ export default function Page() {
             <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
             {error ? <span className="text-sm font-medium text-negative">{error}</span> : null}
           </div>
-          <div className="relative">
-            <div className="pointer-events-none absolute left-3 top-3 z-10 text-sm text-muted">
-              {coin ? `${displayCoin(coin)} perpetual` : ''}
-            </div>
-            <Chart
-              key={`${coin ?? 'none'}:${activeInterval}`}
-              candles={data.candles}
-              levels={data.levels}
-              interval={activeInterval}
-              theme={theme}
-            />
-          </div>
+          <Chart
+            key={`${coin ?? 'none'}:${activeInterval}`}
+            candles={data.candles}
+            levels={data.levels}
+            interval={activeInterval}
+            theme={theme}
+          />
         </section>
 
         <aside className="min-w-0 rounded border border-line bg-surface">
@@ -258,27 +254,44 @@ function TimeframeSelector({
   );
 }
 
-function ThemeSelector({ theme, onSelect }: { theme: Theme; onSelect: (theme: Theme) => void }) {
+function ThemeMenu({ theme, onSelect }: { theme: Theme; onSelect: (theme: Theme) => void }) {
+  const [open, setOpen] = useState(false);
   const options: Array<[Theme, string]> = [['light', 'Light'], ['dusk', 'Dusk'], ['dark', 'Dark']];
 
   return (
-    <div className="inline-flex rounded border border-line bg-surface2 p-1">
-      {options.map(([value, label]) => {
-        const isActive = value === theme;
-        return (
-          <button
-            key={value}
-            type="button"
-            onClick={() => onSelect(value)}
-            className={[
-              'rounded px-2.5 py-1.5 text-sm font-semibold transition-colors',
-              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
-            ].join(' ')}
-          >
-            {label}
-          </button>
-        );
-      })}
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex items-center gap-2 rounded border border-line bg-surface2 px-3 py-2 font-medium text-ink"
+      >
+        <Palette className="h-4 w-4" aria-hidden />
+        Theme
+      </button>
+
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute right-0 z-20 mt-1 w-32 overflow-hidden rounded border border-line bg-surface2 shadow-lg">
+            {options.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  onSelect(value);
+                  setOpen(false);
+                }}
+                className={[
+                  'block w-full px-3 py-2 text-left text-sm font-medium transition-colors',
+                  value === theme ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

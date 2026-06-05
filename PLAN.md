@@ -668,3 +668,148 @@ Reuse the **pure** `computeLevels(dailyCandles, { now, swingLookbackDays, pivotW
 - **Keep it read-only and pure** — derive from existing cached `1d` candles; no per-request writes beyond an optional in-memory cache.
 - **Reuse the live level logic exactly** (`swingLookbackDays: 0`, `swingMinDistancePct`) so historical and current levels never disagree.
 - **History range tracks the actual loaded candle window**, which differs per interval — don't hardcode a day count.
+
+## v3.9 Fixes — bugs found in testing (2026-06-05)
+
+The first v3 implementation rendered, but the per-day segment builder is broken. Three bugs, all in `web/components/Chart.tsx`. Fix all three.
+
+### Bug A — `setData` crash on the 1d (and other) timeframes
+**Symptom:** clicking **1d** with History on throws `Assertion failed: data must be asc ordered by time, index=3, time=…, prev time=…`.
+**Cause:** `appendSegment` manufactures segment point times with fudge constants (`intervalMs - 2000`, `endOpen + intervalMs`, `Math.max(1000, …)`). Those times are **not guaranteed strictly ascending or non-overlapping** — on single-bar days (1d) and at some day boundaries, a day's end/break point lands at or after the next day's start point, so the series points go backwards in time and lightweight-charts rejects them.
+
+### Bug B — segments don't line up / "lines make no sense" across timeframes
+**Symptom:** on 15m/1h/4h the historical level lines overlap, connect into spurious dashed boxes, and don't sit over the right candles.
+**Cause:** same fudged-time construction — segments connect across days and don't align to bars.
+
+### Bug C — `removeSeries` crash on chart teardown (already hot-patched locally; include in the proper fix)
+**Symptom:** `Error: Value is undefined` at `removeSeries` when changing timeframe with History on.
+**Cause:** `chart.remove()` disposes all series, but `priceLinesRef`/`historySeriesRef` still held the old (disposed) series, and the re-run effect (React Strict Mode in dev recreates the chart) tried to remove them from the new chart.
+**Fix:** in the create-chart effect's cleanup, also reset `priceLinesRef.current = []` and `historySeriesRef.current = []` after `chart.remove()`. (A local hot-patch already does this — keep it.)
+
+### Required approach — rebuild the history series with candle-aligned points (drop the fudge math)
+
+Replace `buildHistorySeriesData` + `appendSegment` with a builder that uses the **loaded candle times directly as the x-grid** — no synthetic timestamps:
+
+1. Build a `Map<utcDay, Levels>` from `levelsHistory` (key = `forUtcDay`).
+2. Iterate the **loaded `candles` in ascending openTime order** (they already are). For each candle, find its UTC day and that day's `Levels`. For each of the four level keys, push to that series:
+   - `{ time: toChartTime(candle.openTime), value }` if the day has a non-null value for that key, **else** a whitespace point `{ time: toChartTime(candle.openTime) }` so the line breaks (no value).
+3. Because every point's time is a real candle openTime, the series are **inherently strictly ascending, unique, and aligned to bars** — this fixes Bug A and Bug B at once. Within a day the value is constant → a clean horizontal segment; at the day boundary it steps; null swings produce gaps.
+4. Defensive guard: before `series.setData(points)`, ensure ascending unique times (sort + drop duplicate timestamps) and wrap in try/catch so a bad day can't crash the dashboard.
+
+**Do not** reintroduce per-day 2-points-plus-fudged-break segments. One point per loaded candle per series is correct, simple, and crash-proof.
+
+### Acceptance
+- [ ] History on, switch through 15m/1h/4h/1d — **no crash** on any timeframe.
+- [ ] Each timeframe shows clean horizontal per-day level steps aligned to the candles, in the four colours; gaps where a swing is null.
+- [ ] Switching coin/interval/theme with History on never throws.
+
+## v3.10 — History overlay refinement (rendering only; data is already correct)
+
+Verified the `/api/levels/history` data is correct and smooth (each day's `rangeHigh`/`rangeLow` = prior day's daily H/L; swings stable). The remaining problems are purely how it's drawn. Two changes in `web/components/Chart.tsx`:
+
+### 1. When History is ON, hide today's full-width level lines
+**Problem:** with History on, the four full-width `createPriceLine` levels (today's rangeHigh/rangeLow/swingHigh/swingLow, spanning the whole chart) are still drawn on top of the per-day step series. Those full-width lines crossing everything are the main "all over the place" clutter.
+**Fix:** when `showHistory` is **true**, do **not** create the four full-width price lines at all — render only the per-day historical step series. When `showHistory` is **false**, keep current behaviour (the four full-width lines for today, no history series). So it's an either/or: full-width *today* lines OFF, or per-day *history* steps ON — never both at once.
+
+### 2. Draw the historical levels as a clean continuous staircase
+**Keep all four levels** (rangeHigh/rangeLow solid, swingHigh/swingLow dashed — same four colours). The per-day value must hold flat across that day's candles and **step at the UTC day boundary, continuing into the next day** (one connected staircase across the whole loaded window, not isolated floating bars).
+**Fix:** set `lineType: LineType.WithSteps` on the four history line series so day-to-day changes render as crisp vertical steps rather than diagonal connectors. Keep the existing "one point per loaded candle at that day's value; whitespace point where a swing is null" data construction (that part is right and crash-safe) — only add the stepped line type. A `null` swing for a day breaks only that series, leaving a gap; range lines never break.
+
+### Acceptance
+- [ ] History ON: today's four full-width lines are gone; only the per-day stepped lines show.
+- [ ] The four levels form continuous staircases across the loaded range, stepping at each UTC day, aligned to the candles.
+- [ ] History OFF: exactly the old behaviour — today's four full-width lines, no history series.
+- [ ] No crashes switching coin/interval/theme/History on any timeframe.
+
+---
+
+# v4 — Trend-aware levels & signals (the redesign)
+
+**FOR GEMINI TO IMPLEMENT. This is version 4.** Read §5 (the v1 strategy) and §15 (v1.1) first — they define the parts that stay. v4 changes three things: (1) how swing levels are defined, (2) adds trend detection, (3) gates the confirmed reversion signals by trend. Everything else (the 00:00-UTC day boundary, range high/low = yesterday's daily candle, touch/break detection mechanics, the touch→confirm→trigger sequence, scoring, multi-coin, multi-timeframe charts, the v3 history overlay) is UNCHANGED.
+
+This is a pure-logic change centred on `packages/core`. Keep `core` pure (no I/O), per §4.
+
+## v4.0 Why (the problem being fixed)
+
+The v1 swing definition is "nearest pivot **beyond** the current range." In a trend that always points at a far, counter-trend, never-retested level: in a downtrend the swingHigh is an old high far overhead; in an uptrend the swingLow is an old low far below. So the reversion targets don't get hit, and the engine fades support in downtrends (and resistance in uptrends), which loses. v4 makes the swings the **recent structure price actually retests**, detects the **trend**, and only takes reversions **with the trend** (and both ways only when sideways).
+
+## v4.1 Config changes (`config.ts`)
+
+- `pivotWindow: 2` → **`pivotWindow: 5`** (only major swing turning points feed both the swings and trend; tunable 3–5).
+- **Remove** `swingMinDistancePct` and its use (no longer needed — see v4.3). Leave `swingLookbackDays: 0` (scan all history) as is.
+- Add `trendMethod: 'structure'` (placeholder for a future `'adx'`; only `'structure'` implemented now).
+
+## v4.2 Trend detection (NEW — `packages/core/trend.ts`, pure)
+
+Add `export function detectTrend(dailyCandles: Candle[], now: number, pivotWindow: number): Trend` where `type Trend = 'UP' | 'DOWN' | 'SIDE'`.
+
+Algorithm (market structure):
+1. From the daily candles **with openTime/closeTime at or before `now`'s completed day** (same "no lookahead" rule as `computeLevelsRange`), find all confirmed pivot highs and pivot lows using the existing `isPivotHigh`/`isPivotLow` with `window = pivotWindow`.
+2. Let `PH1`,`PH2` = the two most recent pivot **highs** (PH1 newest), `PL1`,`PL2` = two most recent pivot **lows**.
+3. `UP` if `PH1.high > PH2.high` **and** `PL1.low > PL2.low` (higher highs + higher lows).
+   `DOWN` if `PH1.high < PH2.high` **and** `PL1.low < PL2.low` (lower highs + lower lows).
+   `SIDE` otherwise (mixed structure, or fewer than 2 pivot highs / 2 pivot lows available).
+4. Pure, deterministic, no I/O. Unit-test it (UP / DOWN / SIDE / insufficient-pivots cases).
+
+## v4.3 Swing-level redesign (`packages/core/levels.ts`)
+
+Replace the swing computation in `computeLevels`:
+- **OLD:** nearest pivot high above `rangeHigh` (with min-distance), nearest pivot low below `rangeLow`.
+- **NEW:** `swingHigh` = the `high` of the **most recent confirmed pivot high** in the daily series (scanning back from the target day, window = `pivotWindow`). `swingLow` = the `low` of the **most recent confirmed pivot low**. No "beyond the range" filter, no min-distance. If none exists in all available history → `null`.
+
+`rangeHigh`/`rangeLow` are unchanged (yesterday's completed daily candle). `computeLevelsRange` (v3) keeps working — it just produces the new swing values and should additionally attach the day's `trend` (see v4.5).
+
+## v4.4 Trend-gated confirmed signals (`packages/core/detect.ts`)
+
+The `ReversionSignalTracker` / confirmed-signal path takes the current `trend` and only emits `CONFIRMED_SIGNAL`s **with the trend**:
+- `trend === 'UP'` → emit **LONG** signals only (from support touches); drop SHORT setups.
+- `trend === 'DOWN'` → emit **SHORT** signals only (from resistance touches); drop LONG setups.
+- `trend === 'SIDE'` → emit **both** (full mean-reversion — the regime it's built for).
+Pass `trend` into `tracker.update(...)` (add it to the options/args). `LEVEL_TOUCH` and `LEVEL_BREAK` events are **unchanged** (still informational, fire regardless of trend) — only the actionable `CONFIRMED_SIGNAL` is gated. Targets/stops/score are unchanged.
+
+## v4.5 Types (`packages/core/types.ts`)
+
+- Add `export type Trend = 'UP' | 'DOWN' | 'SIDE';`
+- Add `trend: Trend` to the `Levels` interface (computed alongside the levels for that day).
+- Add optional `trend?: Trend` to `MarketEvent` so a `CONFIRMED_SIGNAL` carries the trend it fired under.
+
+## v4.6 Monitor + API wiring (`packages/monitor`)
+
+- Where levels are computed (`index.ts`), also compute `trend = detectTrend(...)` and store it on the `Levels` object; pass `trend` into the detection/tracker call.
+- `api.ts`: `/api/levels` and `/api/levels/history` already return `Levels` — they now include `trend`. No new endpoint needed.
+- `telegram.ts`: include the trend in the `CONFIRMED_SIGNAL` message (e.g. `🟢 ETH LONG (UP trend) …`).
+
+## v4.7 Dashboard (`packages/web`)
+
+- Show a **trend badge** for the selected coin next to the level strip: `UP` (green), `DOWN` (red), `SIDE` (grey/neutral). Read it from `/api/levels`.
+- In the Signal Feed, show the trend on each `CONFIRMED_SIGNAL` row.
+- No change to the chart level rendering or the v3 history overlay.
+
+## v4.8 Build order
+
+1. `core/types.ts` — add `Trend`, extend `Levels`, `MarketEvent`.
+2. `core/trend.ts` — `detectTrend` + unit tests.
+3. `core/levels.ts` — new swing definition; attach `trend` in `computeLevels`/`computeLevelsRange`.
+4. `core/detect.ts` — gate `CONFIRMED_SIGNAL` by trend; update tests.
+5. `config.ts` — `pivotWindow: 5`, remove `swingMinDistancePct`, add `trendMethod`.
+6. `monitor` — compute/pass/store trend; Telegram text.
+7. `web` — trend badge + signal-feed trend.
+8. `bun run check` must pass.
+
+## v4.9 Acceptance criteria
+
+- [ ] Each coin shows a trend badge (UP/DOWN/SIDE) that matches the daily structure by eye.
+- [ ] swingHigh/swingLow now sit on the **most recent major pivots** (recent lower-highs in a downtrend, higher-lows in an uptrend), not far counter-trend levels.
+- [ ] In a `DOWN` trend the engine emits **no LONG** confirmed signals; in `UP` no SHORT; in `SIDE` both can fire.
+- [ ] `LEVEL_TOUCH`/`LEVEL_BREAK` still fire regardless of trend (informational).
+- [ ] `core` stays pure; `bun run check` passes; new unit tests for `detectTrend` and the gated signals pass.
+- [ ] Range high/low, day boundary, multi-coin, multi-timeframe charts, and the v3 history overlay are unchanged.
+
+## v4.10 Gotchas / verify-before-coding
+
+- **No lookahead:** trend and swings for a historical day D must use only candles completed on/before D (same slice rule as `computeLevelsRange`).
+- **Most recent *confirmed* pivot** is at least `pivotWindow` bars back (a pivot needs `k` bars after it) — that's expected; don't try to mark un-confirmed pivots.
+- **`pivotWindow: 5` changes today's live levels too**, not just history — that's intended (consistent everywhere).
+- **Only gate `CONFIRMED_SIGNAL`** — do not suppress touches/breaks; they're the user's situational awareness.
+- **Keep `core` pure** — `detectTrend` takes candles in, returns a value; no fetch/DB/file access.
+- **`SIDE` is the default** when structure is ambiguous or pivots are too few — never throw.

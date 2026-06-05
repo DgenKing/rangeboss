@@ -49,15 +49,16 @@ export class Store {
   saveLevels(levels: Levels) {
     this.db.prepare(`
       INSERT INTO levels
-        (coin, forUtcDay, computedAt, rangeHigh, rangeLow, swingHigh, swingLow)
+        (coin, forUtcDay, computedAt, rangeHigh, rangeLow, swingHigh, swingLow, trend)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(coin, forUtcDay) DO UPDATE SET
         computedAt = excluded.computedAt,
         rangeHigh = excluded.rangeHigh,
         rangeLow = excluded.rangeLow,
         swingHigh = excluded.swingHigh,
-        swingLow = excluded.swingLow
+        swingLow = excluded.swingLow,
+        trend = excluded.trend
     `).run(
       levels.coin,
       levels.forUtcDay,
@@ -66,6 +67,7 @@ export class Store {
       levels.rangeLow,
       levels.swingHigh,
       levels.swingLow,
+      levels.trend,
     );
   }
 
@@ -73,9 +75,9 @@ export class Store {
     const stmt = this.db.prepare(`
       INSERT INTO events
         (type, coin, side, levelName, levelPrice, candleCloseTime, price,
-         direction, entry, stop, target, score, notified, createdAt)
+         direction, entry, stop, target, score, trend, notified, createdAt)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
 
@@ -93,6 +95,7 @@ export class Store {
         event.stop ?? null,
         event.target ?? null,
         event.score ?? null,
+        event.trend ?? null,
         event.notified ? 1 : 0,
         Date.now(),
       ) as { id: number };
@@ -119,7 +122,7 @@ export class Store {
 
   getLatestLevels(coin: string): Levels | null {
     return this.db.query(`
-      SELECT coin, computedAt, forUtcDay, rangeHigh, rangeLow, swingHigh, swingLow
+      SELECT coin, computedAt, forUtcDay, rangeHigh, rangeLow, swingHigh, swingLow, trend
       FROM levels
       WHERE coin = ?
       ORDER BY computedAt DESC
@@ -130,7 +133,7 @@ export class Store {
   getRecentEvents(coin: string, limit: number): MarketEvent[] {
     const rows = this.db.query(`
       SELECT id, type, coin, side, levelName, levelPrice, candleCloseTime, price,
-             direction, entry, stop, target, score, notified
+             direction, entry, stop, target, score, trend, notified
       FROM events
       WHERE coin = ?
       ORDER BY candleCloseTime DESC, id DESC
@@ -189,6 +192,7 @@ export class Store {
         rangeLow REAL,
         swingHigh REAL,
         swingLow REAL,
+        trend TEXT DEFAULT 'SIDE',
         PRIMARY KEY (coin, forUtcDay)
       );
 
@@ -206,6 +210,7 @@ export class Store {
         stop REAL,
         target REAL,
         score INTEGER,
+        trend TEXT,
         notified INTEGER DEFAULT 0,
         createdAt INTEGER
       );
@@ -214,5 +219,16 @@ export class Store {
       DELETE FROM levels WHERE coin IS NULL OR forUtcDay IS NULL;
       DELETE FROM events WHERE coin IS NULL;
     `);
+
+    this.addColumnIfMissing('levels', 'trend', "TEXT DEFAULT 'SIDE'");
+    this.addColumnIfMissing('events', 'trend', 'TEXT');
+    this.db.exec("UPDATE levels SET trend = 'SIDE' WHERE trend IS NULL;");
+  }
+
+  private addColumnIfMissing(table: string, column: string, definition: string) {
+    const rows = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!rows.some((row) => row.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+    }
   }
 }

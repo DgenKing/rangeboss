@@ -4,12 +4,15 @@ import {
   ColorType,
   CrosshairMode,
   LineStyle,
+  LineType,
   createChart,
   type CandlestickData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type LineData,
   type Time,
+  type WhitespaceData,
 } from 'lightweight-charts';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Candle, Levels } from '../lib/api';
@@ -17,9 +20,14 @@ import type { Candle, Levels } from '../lib/api';
 type Props = {
   candles: Candle[];
   levels: Levels | null;
+  levelsHistory: Levels[];
+  showHistory: boolean;
   interval: string;
   theme: string;
 };
+
+type LevelKey = 'rangeHigh' | 'swingHigh' | 'rangeLow' | 'swingLow';
+type HistoryPoint = LineData<Time> | WhitespaceData<Time>;
 
 const CHART_THEME: Record<string, { bg: string; text: string; grid: string; border: string }> = {
   light: { bg: '#fbfaf6', text: '#373a3d', grid: '#ece8dc', border: '#d6d1c5' },
@@ -27,11 +35,19 @@ const CHART_THEME: Record<string, { bg: string; text: string; grid: string; bord
   dark: { bg: '#16181d', text: '#c4c8ce', grid: '#232730', border: '#2f343d' },
 };
 
-export default function Chart({ candles, levels, interval, theme }: Props) {
+const LEVEL_STYLES: Record<LevelKey, { color: string; title: string; style: LineStyle }> = {
+  rangeHigh: { color: '#b94040', title: 'Range High', style: LineStyle.Solid },
+  swingHigh: { color: '#b94040', title: 'Swing High', style: LineStyle.Dashed },
+  rangeLow: { color: '#20885f', title: 'Range Low', style: LineStyle.Solid },
+  swingLow: { color: '#20885f', title: 'Swing Low', style: LineStyle.Dashed },
+};
+
+export default function Chart({ candles, levels, levelsHistory, showHistory, interval, theme }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const historySeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const didInitialFitRef = useRef(false);
 
   const chartData = useMemo<CandlestickData[]>(() => candles.map((candle) => ({
@@ -102,6 +118,11 @@ export default function Chart({ candles, levels, interval, theme }: Props) {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      // chart.remove() disposes all series/price-lines; drop the stale refs so the
+      // next effect run doesn't try to remove them from a different chart instance
+      // (React Strict Mode in dev recreates the chart, which triggered the crash).
+      priceLinesRef.current = [];
+      historySeriesRef.current = [];
     };
   }, []);
 
@@ -125,13 +146,15 @@ export default function Chart({ candles, levels, interval, theme }: Props) {
     series.setData(chartData);
     priceLinesRef.current.forEach((line) => series.removePriceLine(line));
     priceLinesRef.current = [];
+    historySeriesRef.current.forEach((historySeries) => chartRef.current?.removeSeries(historySeries));
+    historySeriesRef.current = [];
 
-    if (levels) {
-      const lines = [
-        { price: levels.rangeHigh, color: '#b94040', title: 'Range High', style: LineStyle.Solid },
-        levels.swingHigh === null ? null : { price: levels.swingHigh, color: '#b94040', title: 'Swing High', style: LineStyle.Dashed },
-        { price: levels.rangeLow, color: '#20885f', title: 'Range Low', style: LineStyle.Solid },
-        levels.swingLow === null ? null : { price: levels.swingLow, color: '#20885f', title: 'Swing Low', style: LineStyle.Dashed },
+    if (levels && !showHistory) {
+      const lines: Array<{ price: number; color: string; title: string; style: LineStyle } | null> = [
+        { price: levels.rangeHigh, ...LEVEL_STYLES.rangeHigh },
+        levels.swingHigh === null ? null : { price: levels.swingHigh, ...LEVEL_STYLES.swingHigh },
+        { price: levels.rangeLow, ...LEVEL_STYLES.rangeLow },
+        levels.swingLow === null ? null : { price: levels.swingLow, ...LEVEL_STYLES.swingLow },
       ];
 
       for (const line of lines) {
@@ -148,15 +171,91 @@ export default function Chart({ candles, levels, interval, theme }: Props) {
       }
     }
 
+    if (showHistory && levelsHistory.length > 0 && candles.length > 0) {
+      const historyData = buildHistorySeriesData(levelsHistory, candles);
+
+      for (const key of Object.keys(LEVEL_STYLES) as LevelKey[]) {
+        const style = LEVEL_STYLES[key];
+        const historySeries = chartRef.current?.addLineSeries({
+          color: style.color,
+          lineWidth: 2,
+          lineType: LineType.WithSteps,
+          lineStyle: style.style,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        if (!historySeries) continue;
+
+        setHistoryData(historySeries, key, historyData[key]);
+        historySeriesRef.current.push(historySeries);
+      }
+    }
+
     if (!didInitialFitRef.current && chartData.length > 0) {
       chartRef.current?.timeScale().fitContent();
       didInitialFitRef.current = true;
     }
-  }, [chartData, levels]);
+  }, [chartData, candles, levels, levelsHistory, showHistory, interval]);
 
   return <div ref={containerRef} className="h-[540px] w-full overflow-hidden rounded border border-line bg-surface" />;
 }
 
 function toChartTime(timestamp: number): Time {
   return Math.floor(timestamp / 1000) as Time;
+}
+
+function buildHistorySeriesData(levelsHistory: Levels[], candles: Candle[]): Record<LevelKey, HistoryPoint[]> {
+  const levelsByDay = new Map(levelsHistory.map((levels) => [levels.forUtcDay, levels]));
+  const byLevel: Record<LevelKey, HistoryPoint[]> = {
+    rangeHigh: [],
+    swingHigh: [],
+    rangeLow: [],
+    swingLow: [],
+  };
+
+  const sortedCandles = [...candles].sort((a, b) => a.openTime - b.openTime);
+
+  for (const candle of sortedCandles) {
+    const time = toChartTime(candle.openTime);
+    const levels = levelsByDay.get(formatUtcDay(candle.openTime));
+    for (const key of Object.keys(byLevel) as LevelKey[]) {
+      const value = levels?.[key] ?? null;
+      byLevel[key].push(value === null ? { time } : { time, value });
+    }
+  }
+
+  return {
+    rangeHigh: sanitizeHistoryPoints(byLevel.rangeHigh),
+    swingHigh: sanitizeHistoryPoints(byLevel.swingHigh),
+    rangeLow: sanitizeHistoryPoints(byLevel.rangeLow),
+    swingLow: sanitizeHistoryPoints(byLevel.swingLow),
+  };
+}
+
+function sanitizeHistoryPoints(points: HistoryPoint[]): HistoryPoint[] {
+  const seen = new Set<number>();
+  const clean: HistoryPoint[] = [];
+
+  for (const point of [...points].sort((a, b) => Number(a.time) - Number(b.time))) {
+    const time = Number(point.time);
+    if (seen.has(time)) continue;
+    seen.add(time);
+    clean.push(point);
+  }
+
+  return clean;
+}
+
+function setHistoryData(series: ISeriesApi<'Line'>, key: LevelKey, points: HistoryPoint[]) {
+  try {
+    series.setData(points);
+  } catch (error) {
+    console.warn(`Skipping ${key} history levels:`, error);
+    series.setData([]);
+  }
+}
+
+function formatUtcDay(timestamp: number) {
+  return new Date(timestamp).toISOString().slice(0, 10);
 }

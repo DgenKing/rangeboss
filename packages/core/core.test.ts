@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
 import { computeLevels } from './levels';
 import type { Candle, Levels, MarketEvent } from './types';
@@ -172,6 +173,78 @@ describe('ReversionSignalTracker', () => {
 
     const events = tracker.update(candle(24, 95.7, 97, 95.1, 96.8), levels, [], [], signalOptions());
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('runBacktest', () => {
+  test('simulates a confirmed long trade from the first available strategy candle', () => {
+    const dailyCandles = dailyFixture([
+      [100, 80],
+      [110, 84],
+      [108, 82],
+      [130, 81],
+      [112, 83],
+      [109, 78],
+      [115, 86],
+      [111, 85],
+      [107, 88],
+      [110, 95],
+    ]);
+    const strategyCandles = [
+      candle(0, 100, 100.4, 99.8, 100.1),
+      candle(1, 96, 96.5, 94.95, 95.5),
+      candle(2, 95.6, 97, 95.1, 96.8),
+      candle(3, 96.7, 97.2, 96.4, 97.1),
+      candle(4, 97.2, 110.5, 97, 110.2),
+    ];
+
+    const result = runBacktest(strategyCandles, dailyCandles, {
+      coin: 'ETH',
+      detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+      signal: signalOptions(),
+    });
+
+    expect(result.firstCandleTime).toBe(strategyCandles[0].openTime);
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].direction).toBe('LONG');
+    expect(result.trades[0].entry).toBe(97);
+    expect(result.trades[0].exitReason).toBe('TARGET');
+    expect(result.trades[0].exitPrice).toBe(110);
+    expect(result.summary.closedTrades).toBe(1);
+    expect(result.summary.wins).toBe(1);
+    expect(result.summary.netR).toBeGreaterThan(6);
+  });
+
+  test('recomputes historical daily levels instead of using a single current snapshot', () => {
+    const dailyCandles = dailyFixture([
+      [100, 80],
+      [110, 84],
+      [108, 82],
+      [130, 81],
+      [112, 83],
+      [109, 78],
+      [115, 86],
+      [111, 85],
+      [107, 88],
+      [110, 95],
+      [140, 100],
+    ]);
+    const strategyCandles = [
+      candle(0, 100, 100.4, 99.8, 100.1),
+      candle(1, 96, 96.5, 94.95, 95.5),
+      candle(2, 95.6, 97, 95.1, 96.8),
+      candle(3, 96.7, 97.2, 96.4, 97.1),
+      candle(4, 97.2, 110.5, 97, 110.2),
+    ];
+
+    const result = runBacktest(strategyCandles, dailyCandles, {
+      coin: 'ETH',
+      detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+      signal: signalOptions(),
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].target).toBe(110);
   });
 });
 

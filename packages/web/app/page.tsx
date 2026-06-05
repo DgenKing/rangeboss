@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import {
   displayCoin,
+  getCandles,
   getCoins,
   getDashboardData,
   getIntervals,
@@ -13,6 +14,7 @@ import {
   type MarketEvent,
   type Status,
 } from '../lib/api';
+import { runBacktest, type BacktestResult, type BacktestTrade } from '../../core/backtest';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
 
@@ -32,6 +34,26 @@ const emptyData: DashboardData = {
   status: null,
 };
 
+type BacktestLoadState = {
+  result: BacktestResult | null;
+  loading: boolean;
+  error: string | null;
+};
+
+const emptyBacktest: BacktestLoadState = {
+  result: null,
+  loading: false,
+  error: null,
+};
+
+const STRATEGY_INTERVAL = '15m';
+const BACKTEST_HISTORY_LIMIT = 5000;
+const BACKTEST_REFRESH_MS = 60_000;
+const BACKTEST_OPTIONS = {
+  detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+  signal: { confirmWithinCandles: 3, stopBuffer: 0.0005 },
+};
+
 export default function Page() {
   const [coins, setCoins] = useState<string[]>([]);
   const [intervals, setIntervals] = useState<string[]>([]);
@@ -40,6 +62,7 @@ export default function Page() {
   const [data, setData] = useState<DashboardData>(emptyData);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>('light');
+  const [backtest, setBacktest] = useState<BacktestLoadState>(emptyBacktest);
 
   // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
   useEffect(() => {
@@ -127,6 +150,50 @@ export default function Page() {
     };
   }, [coin, activeInterval]);
 
+  useEffect(() => {
+    if (!coin) {
+      setBacktest(emptyBacktest);
+      return;
+    }
+
+    let alive = true;
+
+    async function loadBacktest() {
+      setBacktest((current) => ({ ...current, loading: true, error: null }));
+
+      try {
+        const [strategyCandles, dailyCandles] = await Promise.all([
+          getCandles(coin!, STRATEGY_INTERVAL, BACKTEST_HISTORY_LIMIT),
+          getCandles(coin!, '1d', BACKTEST_HISTORY_LIMIT),
+        ]);
+        if (!alive) return;
+
+        setBacktest({
+          result: runBacktest(strategyCandles, dailyCandles, {
+            coin: coin!,
+            ...BACKTEST_OPTIONS,
+          }),
+          loading: false,
+          error: null,
+        });
+      } catch (caught) {
+        if (!alive) return;
+        setBacktest({
+          result: null,
+          loading: false,
+          error: caught instanceof Error ? caught.message : 'Backtest unavailable',
+        });
+      }
+    }
+
+    void loadBacktest();
+    const interval = setInterval(loadBacktest, BACKTEST_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, [coin]);
+
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
 
@@ -168,6 +235,7 @@ export default function Page() {
               theme={theme}
             />
           </div>
+          <BacktestPanel coin={coin} state={backtest} />
         </section>
 
         <aside className="min-w-0 rounded border border-line bg-surface">
@@ -330,6 +398,119 @@ function LevelStrip({ levels }: { levels: Levels | null }) {
   );
 }
 
+function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLoadState }) {
+  const result = state.result;
+  const summary = result?.summary;
+  const trades = result?.trades.slice(-5).reverse() ?? [];
+
+  return (
+    <section className="mt-4 rounded border border-line bg-surface">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
+        <div>
+          <h2 className="text-base font-semibold">Strategy Backtest</h2>
+          <p className="mt-1 text-sm text-muted">
+            {coin
+              ? `${displayCoin(coin)} ${STRATEGY_INTERVAL} rules from first available candle`
+              : 'Select a market to run the strategy history'}
+          </p>
+        </div>
+        <div className="rounded border border-line bg-surface2 px-3 py-2 text-right text-sm">
+          <div className="text-xs uppercase text-muted">Window</div>
+          <div className="font-semibold">
+            {result?.firstCandleTime ? `${formatShortDate(result.firstCandleTime)} - ${formatShortDate(result.lastCandleTime)}` : 'Waiting'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 p-4 lg:grid-cols-[1fr_1.4fr]">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-2">
+          <BacktestMetric label="Signals" value={summary ? String(summary.totalTrades) : '--'} />
+          <BacktestMetric label="Win Rate" value={summary ? formatPercent(summary.winRate) : '--'} tone={summary && summary.winRate >= 0.5 ? 'positive' : undefined} />
+          <BacktestMetric label="Net R" value={summary ? formatR(summary.netR) : '--'} tone={summary && summary.netR >= 0 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Avg R" value={summary ? formatR(summary.averageR) : '--'} tone={summary && summary.averageR >= 0 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Return" value={summary ? formatPercent(summary.totalReturnPct) : '--'} tone={summary && summary.totalReturnPct >= 0 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Open" value={summary ? String(summary.openTrades) : '--'} />
+        </div>
+
+        <div className="min-w-0 rounded border border-line bg-surface2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2 text-sm">
+            <span className="font-semibold">Recent simulated trades</span>
+            <span className="text-muted">
+              {result ? `${result.touchEvents} touches / ${result.breakEvents} breaks / ${result.strategyCandles} candles` : 'No run yet'}
+            </span>
+          </div>
+          {state.error ? (
+            <div className="px-3 py-5 text-sm text-negative">{state.error}</div>
+          ) : state.loading && !result ? (
+            <div className="px-3 py-5 text-sm text-muted">Loading backtest...</div>
+          ) : trades.length === 0 ? (
+            <div className="px-3 py-5 text-sm text-muted">No confirmed signals in the available history.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="text-xs uppercase text-muted">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Time</th>
+                    <th className="px-3 py-2 font-medium">Side</th>
+                    <th className="px-3 py-2 font-medium">Entry</th>
+                    <th className="px-3 py-2 font-medium">Exit</th>
+                    <th className="px-3 py-2 font-medium">R</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((trade) => (
+                    <BacktestTradeRow key={`${trade.signalTime}-${trade.direction}-${trade.levelName}`} trade={trade} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BacktestMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: 'positive' | 'negative';
+}) {
+  const toneClass = tone === 'positive' ? 'text-positive' : tone === 'negative' ? 'text-negative' : 'text-ink';
+
+  return (
+    <div className="rounded border border-line bg-surface2 px-3 py-2">
+      <div className="text-xs uppercase text-muted">{label}</div>
+      <div className={`truncate text-lg font-semibold ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function BacktestTradeRow({ trade }: { trade: BacktestTrade }) {
+  const isWin = trade.rMultiple > 0;
+
+  return (
+    <tr className="border-t border-line">
+      <td className="whitespace-nowrap px-3 py-2 text-muted">{formatShortDate(trade.signalTime)}</td>
+      <td className={['px-3 py-2 font-semibold', trade.direction === 'LONG' ? 'text-positive' : 'text-negative'].join(' ')}>
+        {trade.direction}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2">{formatPrice(trade.entry)}</td>
+      <td className="whitespace-nowrap px-3 py-2">
+        {formatPrice(trade.exitPrice)}
+        <span className="ml-1 text-xs text-muted">{trade.exitReason}</span>
+      </td>
+      <td className={['whitespace-nowrap px-3 py-2 font-semibold', isWin ? 'text-positive' : 'text-negative'].join(' ')}>
+        {formatR(trade.rMultiple)}
+      </td>
+    </tr>
+  );
+}
+
 function EventRow({ event }: { event: MarketEvent }) {
   const isSignal = event.type === 'CONFIRMED_SIGNAL';
   const accent = event.side === 'SUPPORT' ? 'border-l-positive' : 'border-l-negative';
@@ -384,6 +565,20 @@ function formatPrice(value: number | undefined) {
 function formatUtcDateTime(timestamp: number) {
   // "06-04 14:15" — date + time so prior-day events in the feed are distinguishable.
   return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
+}
+
+function formatShortDate(timestamp: number | null) {
+  if (!timestamp) return 'Waiting';
+  return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatR(value: number) {
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}R`;
 }
 
 function formatTimes(timestamp: number | null) {

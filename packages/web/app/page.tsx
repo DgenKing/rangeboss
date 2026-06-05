@@ -32,6 +32,9 @@ const emptyData: DashboardData = {
   status: null,
 };
 
+// Bump this when you ship a change so you can tell which version is live.
+const APP_VERSION = 'v1.0.0';
+
 export default function Page() {
   const [coins, setCoins] = useState<string[]>([]);
   const [intervals, setIntervals] = useState<string[]>([]);
@@ -180,6 +183,10 @@ export default function Page() {
           </div>
         </aside>
       </div>
+
+      <footer className="px-5 py-4 text-center text-xs text-muted">
+        RangeBoss {APP_VERSION}
+      </footer>
     </main>
   );
 }

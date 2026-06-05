@@ -3,7 +3,16 @@
 import { Activity, Clock, Wifi, WifiOff } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
-import { displayCoin, getCoins, getDashboardData, type Candle, type Levels, type MarketEvent, type Status } from '../lib/api';
+import {
+  displayCoin,
+  getCoins,
+  getDashboardData,
+  getIntervals,
+  type Candle,
+  type Levels,
+  type MarketEvent,
+  type Status,
+} from '../lib/api';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
 
@@ -23,7 +32,9 @@ const emptyData: DashboardData = {
 
 export default function Page() {
   const [coins, setCoins] = useState<string[]>([]);
+  const [intervals, setIntervals] = useState<string[]>([]);
   const [coin, setCoin] = useState<string | null>(null);
+  const [activeInterval, setActiveInterval] = useState('15m');
   const [data, setData] = useState<DashboardData>(emptyData);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +67,26 @@ export default function Page() {
     };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+
+    async function loadIntervals() {
+      try {
+        const list = await getIntervals();
+        if (!alive || list.length === 0) return;
+        setIntervals(list);
+        setActiveInterval((current) => list.includes(current) ? current : list[0]);
+      } catch {
+        if (alive) setIntervals(['15m']);
+      }
+    }
+
+    void loadIntervals();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Poll dashboard data for the selected coin.
   useEffect(() => {
     if (!coin) return;
@@ -64,7 +95,7 @@ export default function Page() {
 
     async function load() {
       try {
-        const next = await getDashboardData(coin!);
+        const next = await getDashboardData(coin!, activeInterval);
         if (!alive) return;
         setData(next);
         setError(null);
@@ -80,7 +111,7 @@ export default function Page() {
       alive = false;
       clearInterval(interval);
     };
-  }, [coin]);
+  }, [coin, activeInterval]);
 
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
@@ -111,9 +142,16 @@ export default function Page() {
         <section className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <LevelStrip levels={data.levels} />
+            <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
             {error ? <span className="text-sm font-medium text-negative">{error}</span> : null}
           </div>
-          <Chart key={coin ?? 'none'} candles={data.candles} levels={data.levels} events={data.events} />
+          <Chart
+            key={`${coin ?? 'none'}:${activeInterval}`}
+            candles={data.candles}
+            levels={data.levels}
+            events={data.events}
+            interval={activeInterval}
+          />
         </section>
 
         <aside className="min-w-0 rounded border border-line bg-[#fbfaf6]">
@@ -168,6 +206,39 @@ function CoinSelector({
         })}
       </div>
     </nav>
+  );
+}
+
+function TimeframeSelector({
+  intervals,
+  active,
+  onSelect,
+}: {
+  intervals: string[];
+  active: string;
+  onSelect: (interval: string) => void;
+}) {
+  if (intervals.length === 0) return null;
+
+  return (
+    <div className="inline-flex rounded border border-line bg-white p-1">
+      {intervals.map((interval) => {
+        const isActive = interval === active;
+        return (
+          <button
+            key={interval}
+            type="button"
+            onClick={() => onSelect(interval)}
+            className={[
+              'min-w-12 rounded px-3 py-1.5 text-sm font-semibold transition-colors',
+              isActive ? 'bg-ink text-white' : 'text-ink hover:bg-[#efeee9]',
+            ].join(' ')}
+          >
+            {interval}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

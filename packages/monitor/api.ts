@@ -17,6 +17,15 @@ export function startApi(store: Store, status: MonitorStatus) {
     return status.coins[0];
   };
 
+  const resolveInterval = (url: URL): string => {
+    const requested = url.searchParams.get('interval');
+    if (requested) {
+      const match = config.chartIntervals.find((interval) => interval === requested);
+      if (match) return match;
+    }
+    return config.candleInterval;
+  };
+
   const server = Bun.serve({
     port: config.apiPort,
     fetch(request) {
@@ -34,13 +43,18 @@ export function startApi(store: Store, status: MonitorStatus) {
         return json(status.coins);
       }
 
+      if (url.pathname === '/api/intervals') {
+        return json(config.chartIntervals);
+      }
+
       if (url.pathname === '/api/levels') {
         return json(store.getLatestLevels(resolveCoin(url)));
       }
 
       if (url.pathname === '/api/candles') {
-        const limit = Number(url.searchParams.get('limit') ?? 300);
-        return json(store.getRecentCandles(resolveCoin(url), config.candleInterval, clampLimit(limit, 1, 1000)));
+        const interval = resolveInterval(url);
+        const limit = Number(url.searchParams.get('limit') ?? 1500);
+        return json(store.getRecentCandles(resolveCoin(url), interval, clampLimit(limit, 1, 5000)));
       }
 
       if (url.pathname === '/api/events') {
@@ -142,9 +156,10 @@ function apiIndex(status: MonitorStatus) {
       <div class="status">socket ${status.socketHealthy ? 'healthy' : 'offline'} - ${status.coins.length} coins: ${status.coins.join(', ')}</div>
       <ul>
         <li><a href="/api/coins"><code>/api/coins</code></a></li>
+        <li><a href="/api/intervals"><code>/api/intervals</code></a></li>
         <li><a href="/api/status?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/status?coin=…</code></a></li>
         <li><a href="/api/levels?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels?coin=…</code></a></li>
-        <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&limit=300"><code>/api/candles?coin=…&limit=300</code></a></li>
+        <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m&limit=1500"><code>/api/candles?coin=…&interval=15m&limit=1500</code></a></li>
         <li><a href="/api/events?coin=${encodeURIComponent(status.coins[0] ?? '')}&limit=50"><code>/api/events?coin=…&limit=50</code></a></li>
       </ul>
     </main>

@@ -152,6 +152,16 @@ export class Store {
     return row?.closeTime ?? null;
   }
 
+  countCandles(coin: string, interval: string): number {
+    const row = this.db.query(`
+      SELECT COUNT(*) AS count
+      FROM candles
+      WHERE coin = ? AND interval = ?
+    `).get(coin, interval) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
   close() {
     this.db.close();
   }

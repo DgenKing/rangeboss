@@ -19,9 +19,10 @@ type Props = {
   candles: Candle[];
   levels: Levels | null;
   events: MarketEvent[];
+  interval: string;
 };
 
-export default function Chart({ candles, levels, events }: Props) {
+export default function Chart({ candles, levels, events, interval }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -36,8 +37,10 @@ export default function Chart({ candles, levels, events }: Props) {
     close: candle.close,
   })), [candles]);
 
+  const intervalMs = useMemo(() => intervalToMs(interval), [interval]);
+
   const markers = useMemo<SeriesMarker<Time>[]>(() => events.map((event) => ({
-    time: toChartTime(event.candleCloseTime - 15 * 60 * 1000),
+    time: toChartTime(containingBarOpenTime(event.candleCloseTime, intervalMs)),
     position: event.side === 'SUPPORT' ? 'belowBar' : 'aboveBar',
     color: event.type === 'CONFIRMED_SIGNAL'
       ? '#b57b20'
@@ -48,7 +51,13 @@ export default function Chart({ candles, levels, events }: Props) {
       ? event.direction === 'LONG' ? 'arrowUp' : 'arrowDown'
       : 'circle',
     text: event.type === 'CONFIRMED_SIGNAL' ? `${event.direction} ${event.score ?? 0}` : event.levelName,
-  })), [events]);
+  }))
+    // lightweight-charts requires markers in ascending time order; events arrive newest-first.
+    .sort((a, b) => (a.time as number) - (b.time as number)), [events, intervalMs]);
+
+  useEffect(() => {
+    didInitialFitRef.current = false;
+  }, [interval]);
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) return;
@@ -150,4 +159,19 @@ export default function Chart({ candles, levels, events }: Props) {
 
 function toChartTime(timestamp: number): Time {
   return Math.floor(timestamp / 1000) as Time;
+}
+
+function containingBarOpenTime(timestamp: number, intervalMs: number): number {
+  return Math.floor((timestamp - 1) / intervalMs) * intervalMs;
+}
+
+function intervalToMs(interval: string): number {
+  const match = /^(\d+)(m|h|d)$/.exec(interval);
+  if (!match) return 15 * 60 * 1000;
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  if (unit === 'm') return value * 60 * 1000;
+  if (unit === 'h') return value * 60 * 60 * 1000;
+  return value * 24 * 60 * 60 * 1000;
 }

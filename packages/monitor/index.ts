@@ -7,7 +7,6 @@ import { fetchCandles, HyperliquidSocket } from './hyperliquid';
 import { Store } from './store';
 import { formatEvent, sendAlert } from './telegram';
 
-const FIFTEEN_MS = 15 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 assertValidConfig();
@@ -21,6 +20,7 @@ const status = {
 
 const trackers = new Map<string, ReversionSignalTracker>();
 const activeLevels = new Map<string, Levels>();
+let nextRestRequestAt = 0;
 for (const coin of config.coins) {
   trackers.set(coin, new ReversionSignalTracker());
 }
@@ -28,13 +28,7 @@ for (const coin of config.coins) {
 // Start the API first so the dashboard can connect immediately while backfill runs.
 startApi(store, status);
 
-for (const coin of config.coins) {
-  try {
-    await backfillAndComputeLevels(coin);
-  } catch (error) {
-    console.error(`Backfill failed for ${coin}:`, error instanceof Error ? error.message : error);
-  }
-}
+await backfillStartup();
 
 scheduleUtcRolloverCheck();
 
@@ -42,7 +36,7 @@ const socket = new HyperliquidSocket(
   {
     wsUrl: config.wsUrl,
     coins: [...config.coins],
-    interval: config.candleInterval,
+    intervals: [...config.chartIntervals],
     staleSocketSeconds: config.staleSocketSeconds,
   },
   {
@@ -65,28 +59,61 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-async function backfillAndComputeLevels(coin: string) {
+async function backfillStartup() {
+  const intervals = orderedChartIntervals();
+  for (const interval of intervals) {
+    for (const coin of config.coins) {
+      try {
+        await backfillInterval(coin, interval);
+      } catch (error) {
+        console.error(
+          `Backfill failed for ${coin} ${interval}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+  }
+
+  for (const coin of config.coins) {
+    try {
+      computeAndStoreLevels(coin);
+    } catch (error) {
+      console.error(`Level compute failed for ${coin}:`, error instanceof Error ? error.message : error);
+    }
+  }
+}
+
+async function backfillInterval(coin: string, interval: string) {
   const endTime = Date.now();
-  const candles15m = await fetchCandles({
+  const intervalMs = intervalToMs(interval);
+  const target = config.backfillTarget[interval] ?? 5000;
+  const existingCount = store.countCandles(coin, interval);
+  const lastCandleTime = store.getLastCandleTime(coin, interval);
+
+  const startTime = existingCount < target || lastCandleTime === null
+    ? endTime - target * intervalMs
+    : Math.max(0, lastCandleTime - intervalMs);
+
+  const estimatedCandles = Math.min(target + 1, Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
+  await waitForRestBudget(estimatedCandles);
+
+  const candles = await fetchCandles({
     restUrl: config.restUrl,
     coin,
-    interval: config.candleInterval,
-    startTime: endTime - 320 * FIFTEEN_MS,
+    interval,
+    startTime,
     endTime,
   });
-  store.saveCandles(coin, config.candleInterval, candles15m);
 
-  // Fetch full daily history (API caps at 5000 candles) so the swing scan can
-  // "scroll left" as far back as needed to find a level beyond the range.
-  const dailyCandles = await fetchCandles({
-    restUrl: config.restUrl,
-    coin,
-    interval: '1d',
-    startTime: endTime - 5000 * DAY_MS,
-    endTime,
-  });
-  store.saveCandles(coin, '1d', dailyCandles);
+  store.saveCandles(coin, interval, candles);
+  console.log(
+    `Backfilled ${coin} ${interval}: saved ${candles.length}, cached ${store.countCandles(coin, interval)}/${target}`,
+  );
+}
 
+function computeAndStoreLevels(coin: string) {
+  const dailyTarget = config.backfillTarget['1d'] ?? 5000;
+  const dailyCandles = store.getRecentCandles(coin, '1d', dailyTarget);
   const levels = computeLevels(dailyCandles, {
     coin,
     swingLookbackDays: config.swingLookbackDays,
@@ -103,11 +130,22 @@ async function backfillAndComputeLevels(coin: string) {
   });
 }
 
-async function handleClosedCandle(coin: string, candle: Candle) {
+async function handleClosedCandle(coin: string, interval: string, candle: Candle) {
+  store.saveCandles(coin, interval, [candle]);
+
+  if (interval === '1d') {
+    try {
+      computeAndStoreLevels(coin);
+    } catch (error) {
+      console.error(`Daily level recompute failed for ${coin}:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  if (interval !== config.candleInterval) return;
+
   const levels = activeLevels.get(coin);
   if (!levels) return;
 
-  store.saveCandles(coin, config.candleInterval, [candle]);
   const recentCandles = store.getRecentCandles(coin, config.candleInterval, 40);
   const recentEvents = store.getRecentEvents(coin, 200);
 
@@ -166,7 +204,8 @@ function scheduleUtcRolloverCheck() {
     const latestCompletedDay = latestCompletedUtcDay();
     for (const coin of config.coins) {
       if (levelDays.get(coin) !== latestCompletedDay) {
-        void backfillAndComputeLevels(coin)
+        void backfillInterval(coin, '1d')
+          .then(() => computeAndStoreLevels(coin))
           .then(() => {
             levelDays.set(coin, activeLevels.get(coin)?.forUtcDay);
           })
@@ -182,4 +221,39 @@ function latestCompletedUtcDay() {
   const now = new Date();
   const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return new Date(todayStart - DAY_MS).toISOString().slice(0, 10);
+}
+
+function orderedChartIntervals(): string[] {
+  return [
+    config.candleInterval,
+    ...config.chartIntervals.filter((interval) => interval !== config.candleInterval),
+  ];
+}
+
+async function waitForRestBudget(estimatedCandles: number) {
+  const estimatedWeight = 20 + Math.ceil(estimatedCandles / 60);
+  const budgetSpacingMs = Math.ceil((estimatedWeight / config.backfillWeightBudgetPerMin) * 60_000);
+  const spacingMs = Math.max(config.backfillRequestSpacingMs, budgetSpacingMs);
+  const now = Date.now();
+  const waitMs = Math.max(0, nextRestRequestAt - now);
+  nextRestRequestAt = Math.max(now, nextRestRequestAt) + spacingMs;
+
+  if (waitMs > 0) {
+    await sleep(waitMs);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function intervalToMs(interval: string): number {
+  const match = /^(\d+)(m|h|d)$/.exec(interval);
+  if (!match) throw new Error(`Unsupported interval: ${interval}`);
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  if (unit === 'm') return value * 60 * 1000;
+  if (unit === 'h') return value * 60 * 60 * 1000;
+  return value * DAY_MS;
 }

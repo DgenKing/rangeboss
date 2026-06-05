@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "bun test packages/core/core.test.ts",
-    "monitor": "bun run packages/monitor/index.ts",
+    "monitor": "bun run free-port && bun run packages/monitor/index.ts",
+    "free-port": "lsof -ti tcp:8787 | xargs -r kill -9 2>/dev/null; sleep 0.3; true",
     "web": "cd packages/web && bun run dev",
     "check": "bun test packages/core/core.test.ts && bunx tsc --noEmit"
   },

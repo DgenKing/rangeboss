@@ -14,7 +14,7 @@ type RawCandle = {
 };
 
 type SocketHandlers = {
-  onClosedCandle: (coin: string, candle: Candle) => void | Promise<void>;
+  onClosedCandle: (coin: string, interval: string, candle: Candle) => void | Promise<void>;
   onCurrentPrice: (coin: string, price: number) => void;
   onHealth: (healthy: boolean) => void;
   onLog?: (message: string) => void;
@@ -66,7 +66,7 @@ export class HyperliquidSocket {
     private readonly params: {
       wsUrl: string;
       coins: string[];
-      interval: string;
+      intervals: string[];
       staleSocketSeconds: number;
     },
     private readonly handlers: SocketHandlers,
@@ -88,7 +88,9 @@ export class HyperliquidSocket {
   }
 
   private connect() {
-    this.handlers.onLog?.(`Opening Hyperliquid WebSocket for ${this.params.coins.length} coins`);
+    this.handlers.onLog?.(
+      `Opening Hyperliquid WebSocket for ${this.params.coins.length} coins x ${this.params.intervals.length} intervals`,
+    );
     this.ws = new WebSocket(this.params.wsUrl);
 
     this.ws.onopen = () => {
@@ -116,14 +118,16 @@ export class HyperliquidSocket {
 
   private subscribe() {
     for (const coin of this.params.coins) {
-      this.send({
-        method: 'subscribe',
-        subscription: {
-          type: 'candle',
-          coin,
-          interval: this.params.interval,
-        },
-      });
+      for (const interval of this.params.intervals) {
+        this.send({
+          method: 'subscribe',
+          subscription: {
+            type: 'candle',
+            coin,
+            interval,
+          },
+        });
+      }
     }
     this.send({
       method: 'subscribe',
@@ -147,7 +151,7 @@ export class HyperliquidSocket {
 
     if (message.channel === 'candle') {
       const raw = message.data as RawCandle;
-      this.handleCandle(raw.s, parseCandle(raw));
+      this.handleCandle(raw.s, raw.i, parseCandle(raw));
       return;
     }
 
@@ -161,28 +165,29 @@ export class HyperliquidSocket {
     }
   }
 
-  private handleCandle(coin: string, candle: Candle) {
+  private handleCandle(coin: string, interval: string, candle: Candle) {
     this.handlers.onCurrentPrice(coin, candle.close);
 
-    const live = this.liveCandles.get(coin);
+    const key = candleKey(coin, interval);
+    const live = this.liveCandles.get(key);
     if (live && candle.openTime > live.openTime) {
-      this.emitClosed(coin, live);
-      this.liveCandles.set(coin, candle);
+      this.emitClosed(coin, interval, live);
+      this.liveCandles.set(key, candle);
       return;
     }
 
-    this.liveCandles.set(coin, candle);
+    this.liveCandles.set(key, candle);
 
     if (Date.now() >= candle.closeTime) {
-      this.emitClosed(coin, candle);
+      this.emitClosed(coin, interval, candle);
     }
   }
 
-  private emitClosed(coin: string, candle: Candle) {
-    const key = `${coin}:${candle.openTime}`;
+  private emitClosed(coin: string, interval: string, candle: Candle) {
+    const key = `${coin}:${interval}:${candle.openTime}`;
     if (this.processed.has(key)) return;
     this.processed.add(key);
-    void this.handlers.onClosedCandle(coin, candle);
+    void this.handlers.onClosedCandle(coin, interval, candle);
 
     if (this.processed.size > 5_000) {
       this.processed = new Set([...this.processed].slice(-2_500));
@@ -227,4 +232,8 @@ function toNumber(value: string | number): number {
   }
 
   return parsed;
+}
+
+function candleKey(coin: string, interval: string): string {
+  return `${coin}:${interval}`;
 }

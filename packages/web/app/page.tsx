@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, Clock, Wifi, WifiOff } from 'lucide-react';
+import { Clock, Wifi, WifiOff } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -15,6 +15,8 @@ import {
 } from '../lib/api';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
+
+type Theme = 'light' | 'dusk' | 'dark';
 
 type DashboardData = {
   levels: Levels | null;
@@ -37,6 +39,18 @@ export default function Page() {
   const [activeInterval, setActiveInterval] = useState('15m');
   const [data, setData] = useState<DashboardData>(emptyData);
   const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>('light');
+
+  // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
+  useEffect(() => {
+    const saved = localStorage.getItem('rb-theme');
+    if (saved === 'light' || saved === 'dusk' || saved === 'dark') setTheme(saved);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('rb-theme', theme);
+  }, [theme]);
 
   // Load the coin list, retrying until the monitor API is reachable.
   useEffect(() => {
@@ -117,18 +131,15 @@ export default function Page() {
   const price = data.status?.currentPrice ?? latestClose;
 
   return (
-    <main className="min-h-screen bg-[#efeee9] text-ink">
-      <header className="border-b border-line bg-[#fbfaf6]">
+    <main className="min-h-screen bg-bg text-ink">
+      <header className="border-b border-line bg-surface">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="flex items-center gap-3">
-            <Activity className="h-6 w-6 text-warning" aria-hidden />
-            <div>
-              <h1 className="text-xl font-semibold">Hyperliquid Level Monitor</h1>
-              <p className="text-sm text-[#62666a]">{coin ? `${displayCoin(coin)} perpetual` : 'Loading…'}</p>
-            </div>
+            <img src="/rangeboss-logo.png" alt="RangeBoss" className="h-9 w-auto" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-sm">
+            <ThemeSelector theme={theme} onSelect={setTheme} />
             <StatusPill healthy={Boolean(data.status?.socketHealthy)} />
             <Metric label="Price" value={price === null ? 'Waiting' : formatPrice(price)} />
             <Metric label="Last Candle" value={formatTimes(data.status?.lastCandleTime ?? null)} wide />
@@ -145,22 +156,28 @@ export default function Page() {
             <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
             {error ? <span className="text-sm font-medium text-negative">{error}</span> : null}
           </div>
-          <Chart
-            key={`${coin ?? 'none'}:${activeInterval}`}
-            candles={data.candles}
-            levels={data.levels}
-            interval={activeInterval}
-          />
+          <div className="relative">
+            <div className="pointer-events-none absolute left-3 top-3 z-10 text-sm text-muted">
+              {coin ? `${displayCoin(coin)} perpetual` : ''}
+            </div>
+            <Chart
+              key={`${coin ?? 'none'}:${activeInterval}`}
+              candles={data.candles}
+              levels={data.levels}
+              interval={activeInterval}
+              theme={theme}
+            />
+          </div>
         </section>
 
-        <aside className="min-w-0 rounded border border-line bg-[#fbfaf6]">
+        <aside className="min-w-0 rounded border border-line bg-surface">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <h2 className="text-base font-semibold">Signal Feed</h2>
-            <span className="text-sm text-[#62666a]">{data.events.length}</span>
+            <span className="text-sm text-muted">{data.events.length}</span>
           </div>
           <div className="max-h-[620px] overflow-y-auto">
             {data.events.length === 0 ? (
-              <div className="px-4 py-8 text-sm text-[#62666a]">No events yet</div>
+              <div className="px-4 py-8 text-sm text-muted">No events yet</div>
             ) : data.events.map((event) => (
               <EventRow key={`${event.id ?? event.candleCloseTime}-${event.type}-${event.levelName}`} event={event} />
             ))}
@@ -183,7 +200,7 @@ function CoinSelector({
   if (coins.length === 0) return null;
 
   return (
-    <nav className="border-b border-line bg-[#fbfaf6]">
+    <nav className="border-b border-line bg-surface">
       <div className="mx-auto flex max-w-[1600px] gap-2 overflow-x-auto px-5 py-3">
         {coins.map((c) => {
           const isActive = c === active;
@@ -195,8 +212,8 @@ function CoinSelector({
               className={[
                 'shrink-0 rounded border px-3 py-1.5 text-sm font-semibold transition-colors',
                 isActive
-                  ? 'border-ink bg-ink text-white'
-                  : 'border-line bg-white text-ink hover:border-ink/40',
+                  ? 'border-accent bg-accent text-accentfg'
+                  : 'border-line bg-surface2 text-ink hover:border-muted',
               ].join(' ')}
             >
               {displayCoin(c)}
@@ -220,7 +237,7 @@ function TimeframeSelector({
   if (intervals.length === 0) return null;
 
   return (
-    <div className="inline-flex rounded border border-line bg-white p-1">
+    <div className="inline-flex rounded border border-line bg-surface2 p-1">
       {intervals.map((interval) => {
         const isActive = interval === active;
         return (
@@ -230,10 +247,35 @@ function TimeframeSelector({
             onClick={() => onSelect(interval)}
             className={[
               'min-w-12 rounded px-3 py-1.5 text-sm font-semibold transition-colors',
-              isActive ? 'bg-ink text-white' : 'text-ink hover:bg-[#efeee9]',
+              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
             ].join(' ')}
           >
             {interval}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ThemeSelector({ theme, onSelect }: { theme: Theme; onSelect: (theme: Theme) => void }) {
+  const options: Array<[Theme, string]> = [['light', 'Light'], ['dusk', 'Dusk'], ['dark', 'Dark']];
+
+  return (
+    <div className="inline-flex rounded border border-line bg-surface2 p-1">
+      {options.map(([value, label]) => {
+        const isActive = value === theme;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onSelect(value)}
+            className={[
+              'rounded px-2.5 py-1.5 text-sm font-semibold transition-colors',
+              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
+            ].join(' ')}
+          >
+            {label}
           </button>
         );
       })}
@@ -257,8 +299,8 @@ function StatusPill({ healthy }: { healthy: boolean }) {
 
 function Metric({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
   return (
-    <div className={['rounded border border-line bg-white px-3 py-2', wide ? 'min-w-[260px]' : 'min-w-[120px]'].join(' ')}>
-      <div className="text-xs uppercase text-[#62666a]">{label}</div>
+    <div className={['rounded border border-line bg-surface2 px-3 py-2', wide ? 'min-w-[260px]' : 'min-w-[120px]'].join(' ')}>
+      <div className="text-xs uppercase text-muted">{label}</div>
       <div className="truncate font-semibold">{value}</div>
     </div>
   );
@@ -273,14 +315,14 @@ function LevelStrip({ levels }: { levels: Levels | null }) {
   ] as const : [], [levels]);
 
   if (!levels) {
-    return <div className="text-sm text-[#62666a]">Levels pending</div>;
+    return <div className="text-sm text-muted">Levels pending</div>;
   }
 
   return (
     <div className="flex flex-wrap gap-2">
       {items.map(([label, value, color]) => (
-        <div key={label} className="rounded border border-line bg-[#fbfaf6] px-3 py-2 text-sm">
-          <span className="mr-2 text-[#62666a]">{label}</span>
+        <div key={label} className="rounded border border-line bg-surface px-3 py-2 text-sm">
+          <span className="mr-2 text-muted">{label}</span>
           <span className={`font-semibold ${color}`}>{value === null ? 'None' : formatPrice(value)}</span>
         </div>
       ))}
@@ -300,9 +342,9 @@ function EventRow({ event }: { event: MarketEvent }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold">{isSignal ? `${event.direction} Signal` : titleCase(event.type)}</div>
-          <div className="text-sm text-[#62666a]">{event.levelName} at {formatPrice(event.levelPrice)}</div>
+          <div className="text-sm text-muted">{event.levelName} at {formatPrice(event.levelPrice)}</div>
         </div>
-        <div className="flex items-center gap-1 text-xs text-[#62666a]">
+        <div className="flex items-center gap-1 text-xs text-muted">
           <Clock className="h-3.5 w-3.5" aria-hidden />
           {formatUtcDateTime(event.candleCloseTime)}
         </div>
@@ -328,7 +370,7 @@ function EventRow({ event }: { event: MarketEvent }) {
 function Value({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-xs uppercase text-[#62666a]">{label}</div>
+      <div className="text-xs uppercase text-muted">{label}</div>
       <div className="truncate font-medium">{value}</div>
     </div>
   );

@@ -18,9 +18,16 @@ type Props = {
   candles: Candle[];
   levels: Levels | null;
   interval: string;
+  theme: string;
 };
 
-export default function Chart({ candles, levels, interval }: Props) {
+const CHART_THEME: Record<string, { bg: string; text: string; grid: string; border: string }> = {
+  light: { bg: '#fbfaf6', text: '#373a3d', grid: '#ece8dc', border: '#d6d1c5' },
+  dusk: { bg: '#343a47', text: '#ced3dd', grid: '#3e4552', border: '#4a5160' },
+  dark: { bg: '#16181d', text: '#c4c8ce', grid: '#232730', border: '#2f343d' },
+};
+
+export default function Chart({ candles, levels, interval, theme }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -42,16 +49,17 @@ export default function Chart({ candles, levels, interval }: Props) {
   useEffect(() => {
     if (!containerRef.current || chartRef.current) return;
 
+    const palette = CHART_THEME[theme] ?? CHART_THEME.light;
     const chart = createChart(containerRef.current, {
       height: 540,
       layout: {
-        background: { type: ColorType.Solid, color: '#fbfaf6' },
-        textColor: '#373a3d',
+        background: { type: ColorType.Solid, color: palette.bg },
+        textColor: palette.text,
         fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
       },
       grid: {
-        vertLines: { color: '#ece8dc' },
-        horzLines: { color: '#ece8dc' },
+        vertLines: { color: palette.grid },
+        horzLines: { color: palette.grid },
       },
       crosshair: { mode: CrosshairMode.Normal },
       handleScroll: {
@@ -65,9 +73,9 @@ export default function Chart({ candles, levels, interval }: Props) {
         mouseWheel: true,
         pinch: true,
       },
-      rightPriceScale: { borderColor: '#d6d1c5' },
+      rightPriceScale: { borderColor: palette.border },
       timeScale: {
-        borderColor: '#d6d1c5',
+        borderColor: palette.border,
         timeVisible: true,
         secondsVisible: false,
       },
@@ -96,6 +104,19 @@ export default function Chart({ candles, levels, interval }: Props) {
       seriesRef.current = null;
     };
   }, []);
+
+  // Re-tint the chart when the theme changes (the chart is created once).
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const palette = CHART_THEME[theme] ?? CHART_THEME.light;
+    chart.applyOptions({
+      layout: { background: { type: ColorType.Solid, color: palette.bg }, textColor: palette.text },
+      grid: { vertLines: { color: palette.grid }, horzLines: { color: palette.grid } },
+      rightPriceScale: { borderColor: palette.border },
+      timeScale: { borderColor: palette.border },
+    });
+  }, [theme]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -133,7 +154,7 @@ export default function Chart({ candles, levels, interval }: Props) {
     }
   }, [chartData, levels]);
 
-  return <div ref={containerRef} className="h-[540px] w-full overflow-hidden rounded border border-line bg-[#fbfaf6]" />;
+  return <div ref={containerRef} className="h-[540px] w-full overflow-hidden rounded border border-line bg-surface" />;
 }
 
 function toChartTime(timestamp: number): Time {

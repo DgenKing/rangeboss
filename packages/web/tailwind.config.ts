@@ -9,9 +9,14 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: '#15171a',
-        panel: '#f7f7f4',
-        line: '#dedbd2',
+        bg: 'var(--bg)',
+        surface: 'var(--surface)',
+        surface2: 'var(--surface-2)',
+        ink: 'var(--text)',
+        muted: 'var(--muted)',
+        line: 'var(--line)',
+        accent: 'var(--accent)',
+        accentfg: 'var(--accent-fg)',
         positive: '#20885f',
         negative: '#b94040',
         warning: '#b57b20',

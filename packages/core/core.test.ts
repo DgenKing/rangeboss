@@ -3,6 +3,7 @@ import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
 import { calculateIndicatorSeries, latestIndicatorAt, type IndicatorSnapshot } from './indicators';
 import { computeLevels } from './levels';
+import { calculateRiskAdjustedRatios, dailyEquityReturns } from './performance';
 import {
   calculatePortfolioAllocation,
   portfolioCommonStart,
@@ -437,6 +438,29 @@ describe('regime-aware strategy', () => {
 });
 
 describe('shared-capital portfolio', () => {
+  test('derives risk-adjusted ratios from existing returns without changing the return series', () => {
+    const returns = [0.01, -0.005, 0.015, -0.002];
+    const before = [...returns];
+    const ratios = calculateRiskAdjustedRatios(returns, 365);
+
+    expect(ratios.sharpeRatio).toBeCloseTo(9.0124, 3);
+    expect(ratios.sortinoRatio).toBeCloseTo(31.9293, 3);
+    expect(returns).toEqual(before);
+  });
+
+  test('derives UTC daily returns from the last existing equity point in each day', () => {
+    const points = [
+      { time: Date.UTC(2026, 0, 1, 12), equity: 1_000 },
+      { time: Date.UTC(2026, 0, 1, 23), equity: 1_100 },
+      { time: Date.UTC(2026, 0, 2, 12), equity: 1_045 },
+      { time: Date.UTC(2026, 0, 3, 12), equity: 1_149.5 },
+    ];
+
+    const returns = dailyEquityReturns(points);
+    expect(returns[0]).toBeCloseTo(-0.05);
+    expect(returns[1]).toBeCloseTo(0.1);
+  });
+
   test('targets 2% equity risk with 5x leverage and caps margin at 25%', () => {
     const sized = calculatePortfolioAllocation({
       equity: 1_000,
@@ -550,6 +574,30 @@ describe('shared-capital portfolio', () => {
     ]);
 
     expect(start).toBeGreaterThan(candle(4, 1, 1, 1, 1).openTime);
+  });
+
+  test('adds reporting fields without changing portfolio execution performance', () => {
+    const entryCandle = candle(0, 100, 110, 99, 110);
+    const result = simulatePortfolioTrades(
+      [portfolioTrade('ETH', 100, 'LONG', 100, 90, 110, 0.1)],
+      { ETH: [entryCandle] },
+      portfolioOptions(),
+      entryCandle.closeTime,
+      entryCandle.closeTime,
+    );
+
+    expect(result.summary.finalEquity).toBeCloseTo(1_020);
+    expect(result.summary.totalReturnPct).toBeCloseTo(0.02);
+    expect(result.summary.closedTrades).toBe(1);
+    expect(result.closedTrades[0]).toMatchObject({
+      coin: 'ETH',
+      margin: 40,
+      notional: 200,
+      pnl: 20,
+      exitReason: 'TARGET',
+    });
+    expect(result.summary.sharpeRatio).toBeNull();
+    expect(result.summary.sortinoRatio).toBeNull();
   });
 });
 

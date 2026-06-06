@@ -227,7 +227,7 @@ function compactPortfolio(result: PortfolioResult): PortfolioResult {
   return {
     ...result,
     timeline,
-    closedTrades: result.closedTrades.slice(-100),
+    closedTrades: result.closedTrades,
     decisions: result.decisions.slice(-200),
   };
 }

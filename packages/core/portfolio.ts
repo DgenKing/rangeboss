@@ -4,6 +4,7 @@ import {
   defaultRegimeOptions,
   type RegimeOptions,
 } from './indicators';
+import { calculateRiskAdjustedRatios, dailyEquityReturns } from './performance';
 import type { Candle, Direction, MarketRegime, StrategyName } from './types';
 
 export interface PortfolioSymbolData {
@@ -116,6 +117,8 @@ export interface PortfolioResult {
     liquidations: number;
     profitFactor: number;
     feesPaid: number;
+    sharpeRatio: number | null;
+    sortinoRatio: number | null;
   };
   timeline: PortfolioPoint[];
   activePositions: PortfolioPosition[];
@@ -366,6 +369,7 @@ export function simulatePortfolioTrades(
   const finalEquity = timeline.at(-1)?.equity ?? options.startingCapital;
   const gains = sum(closedTrades.filter((trade) => trade.pnl > 0).map((trade) => trade.pnl));
   const losses = Math.abs(sum(closedTrades.filter((trade) => trade.pnl <= 0).map((trade) => trade.pnl)));
+  const ratios = calculateRiskAdjustedRatios(dailyEquityReturns(timeline), 365);
 
   return {
     commonStartTime,
@@ -384,6 +388,7 @@ export function simulatePortfolioTrades(
       liquidations: closedTrades.filter((trade) => trade.exitReason === 'LIQUIDATION').length,
       profitFactor: losses > 0 ? gains / losses : gains > 0 ? Number.POSITIVE_INFINITY : 0,
       feesPaid: sum(closedTrades.map((trade) => trade.notional * options.feePerSide * 2)),
+      ...ratios,
     },
     timeline,
     activePositions,
@@ -584,6 +589,8 @@ function emptyResult(startingCapital: number): PortfolioResult {
       liquidations: 0,
       profitFactor: 0,
       feesPaid: 0,
+      sharpeRatio: null,
+      sortinoRatio: null,
     },
     timeline: [],
     activePositions: [],

@@ -8,6 +8,7 @@ import type {
   PortfolioResult,
 } from '../../core/portfolio';
 import { displayCoin } from '../lib/api';
+import TradeLedger from './TradeLedger';
 
 const PortfolioChart = dynamic(() => import('./PortfolioChart'), { ssr: false });
 
@@ -106,16 +107,26 @@ export default function PortfolioView({
         </div>
       </div>
 
-      <div className="grid border-t border-line sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid border-t border-line sm:grid-cols-2 lg:grid-cols-6">
         <FooterMetric label="Closed trades" value={String(result.summary.closedTrades)} />
         <FooterMetric label="Rejected signals" value={String(result.summary.rejectedSignals)} />
         <FooterMetric label="Fees paid" value={formatUsd(result.summary.feesPaid)} />
         <FooterMetric label="Portfolio PF" value={formatFactor(result.summary.profitFactor)} />
+        <FooterMetric label="Sharpe" value={formatRatio(result.summary.sharpeRatio)} />
+        <FooterMetric label="Sortino" value={formatRatio(result.summary.sortinoRatio)} />
       </div>
 
       <div className="grid gap-4 border-t border-line p-4 lg:grid-cols-2">
         <Attribution title="P&L by token" rows={result.bySymbol} />
         <Attribution title="P&L by strategy" rows={result.byStrategy} />
+      </div>
+
+      <div className="border-t border-line p-4">
+        <TradeLedger
+          trades={result.closedTrades}
+          title="Complete portfolio trade ledger"
+          description="All executed shared-capital trades. Margin is posted isolated capital; notional includes leverage."
+        />
       </div>
     </section>
   );
@@ -207,6 +218,10 @@ function formatUnsignedPercent(value: number) {
 
 function formatFactor(value: number) {
   return Number.isFinite(value) ? value.toFixed(2) : 'INF';
+}
+
+function formatRatio(value: number | null) {
+  return value === null ? 'n/a' : value.toFixed(2);
 }
 
 function formatDate(timestamp: number | null) {

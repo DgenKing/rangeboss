@@ -17,6 +17,7 @@ import {
 } from '../lib/api';
 import { runBacktest, type BacktestResult, type BacktestTrade } from '../../core/backtest';
 import type { PortfolioResult } from '../../core/portfolio';
+import TradeLedger from '../components/TradeLedger';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
 const PortfolioView = dynamic(() => import('../components/PortfolioView'), { ssr: false });
@@ -320,7 +321,7 @@ export default function Page() {
               theme={theme}
             />
           </div>
-          <BacktestPanel coin={coin} state={backtest} />
+          <BacktestPanel coin={coin} state={backtest} portfolio={portfolio.result} />
         </section>
 
         <aside className="min-w-0 rounded border border-line bg-surface">
@@ -500,11 +501,20 @@ function LevelStrip({ levels }: { levels: Levels | null }) {
   );
 }
 
-function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLoadState }) {
+function BacktestPanel({
+  coin,
+  state,
+  portfolio,
+}: {
+  coin: string | null;
+  state: BacktestLoadState;
+  portfolio: PortfolioResult | null;
+}) {
   const result = state.result;
   const summary = result?.summary;
   const outOfSample = result?.segments.outOfSample.summary;
   const trades = result?.trades.slice(-5).reverse() ?? [];
+  const executedTrades = coin ? portfolio?.closedTrades.filter((trade) => trade.coin === coin) ?? [] : [];
 
   return (
     <section className="mt-4 rounded border border-line bg-surface">
@@ -534,6 +544,8 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
           <BacktestMetric label="Win Rate" value={summary ? formatPercent(summary.winRate) : '--'} tone={summary && summary.winRate >= 0.5 ? 'positive' : undefined} />
           <BacktestMetric label="Net R" value={summary ? formatR(summary.netR) : '--'} tone={summary && summary.netR >= 0 ? 'positive' : 'negative'} />
           <BacktestMetric label="Profit Factor" value={summary ? formatProfitFactor(summary.profitFactor) : '--'} tone={summary && summary.profitFactor >= 1 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Trade Sharpe" value={formatRatio(summary?.sharpeRatio)} />
+          <BacktestMetric label="Trade Sortino" value={formatRatio(summary?.sortinoRatio)} />
           <BacktestMetric label="Max Drawdown" value={summary ? formatR(-summary.maxDrawdownR) : '--'} tone="negative" />
           <BacktestMetric label="Holdout Net R" value={outOfSample ? formatR(outOfSample.netR) : '--'} tone={outOfSample && outOfSample.netR >= 0 ? 'positive' : 'negative'} />
           <BacktestMetric label="Exposure" value={result ? formatPercent(result.exposurePct) : '--'} />
@@ -581,6 +593,14 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
         <BacktestBreakdown label="Trend momentum" trades={result?.byStrategy.TREND_MOMENTUM.totalTrades} netR={result?.byStrategy.TREND_MOMENTUM.netR} />
         <BacktestBreakdown label="First 70%" trades={result?.segments.inSample.summary.totalTrades} netR={result?.segments.inSample.summary.netR} />
         <BacktestBreakdown label="Last 30%" trades={result?.segments.outOfSample.summary.totalTrades} netR={result?.segments.outOfSample.summary.netR} />
+      </div>
+      <div className="border-t border-line p-4">
+        <TradeLedger
+          trades={executedTrades}
+          title={`${coin ? displayCoin(coin) : 'Token'} executed trade ledger`}
+          description="Shared-portfolio executions for this token, reconciled with the portfolio view."
+          showMarket={false}
+        />
       </div>
     </section>
   );
@@ -718,6 +738,10 @@ function formatR(value: number) {
 
 function formatProfitFactor(value: number) {
   return Number.isFinite(value) ? value.toFixed(2) : 'INF';
+}
+
+function formatRatio(value: number | null | undefined) {
+  return value === null || value === undefined ? 'n/a' : value.toFixed(2);
 }
 
 function formatTimes(timestamp: number | null) {

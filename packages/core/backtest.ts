@@ -7,6 +7,7 @@ import {
   type RegimeOptions,
 } from './indicators';
 import { computeLevels } from './levels';
+import { calculateRiskAdjustedRatios } from './performance';
 import {
   RegimeAwareStrategyEngine,
   type RegimeStrategyOptions,
@@ -75,6 +76,8 @@ export interface BacktestSummary {
   totalReturnPct: number;
   profitFactor: number;
   maxDrawdownR: number;
+  sharpeRatio: number | null;
+  sortinoRatio: number | null;
 }
 
 export interface BacktestSegment {
@@ -285,6 +288,7 @@ function summarizeTrades(trades: BacktestTrade[]): BacktestSummary {
   let equity = 0;
   let peak = 0;
   let maxDrawdownR = 0;
+  const ratios = calculateRiskAdjustedRatios(closed.map((trade) => trade.returnPct));
   for (const value of rValues) {
     equity += value;
     peak = Math.max(peak, equity);
@@ -305,6 +309,7 @@ function summarizeTrades(trades: BacktestTrade[]): BacktestSummary {
     totalReturnPct: sum(trades.map((trade) => trade.returnPct)),
     profitFactor: losses > 0 ? gains / losses : gains > 0 ? Number.POSITIVE_INFINITY : 0,
     maxDrawdownR,
+    ...ratios,
   };
 }
 

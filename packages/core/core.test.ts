@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
-import { computeLevels } from './levels';
+import { computeLevels, computeLevelsRange } from './levels';
+import { detectTrend } from './trend';
 import type { Candle, Levels, MarketEvent } from './types';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -37,32 +38,27 @@ describe('computeLevels', () => {
     expect(levels.swingLow).toBe(78);
   });
 
-  test('rejects a swing that is not at least swingMinDistancePct beyond the range', () => {
-    // Mirrors the HYPE-at-ATH case: the nearest pivot high is barely above the
-    // range high (fake precision) so swingHigh must be null; the swing low sits
-    // well below the range low and survives.
+  test('uses the most recent confirmed pivot as swing even when it is inside the range', () => {
     const candles = dailyFixture([
-      [99, 96],
-      [99, 94],
-      [98, 70],     // pivot low 70, well below range low -> valid swingLow
-      [99, 94],
-      [100.3, 92],  // pivot high 100.3, only 0.3% above range high -> rejected
-      [99, 96],
-      [98, 97],
-      [100, 95],    // yesterday: rangeHigh 100, rangeLow 95
+      [100, 90],
+      [105, 88],
+      [99, 89],
+      [101, 87], // most recent confirmed pivot high and low
+      [98, 88],
+      [130, 80], // yesterday's range dwarfs the recent structure
     ]);
 
     const levels = computeLevels(candles, {
       coin: 'ETH',
       now,
       swingLookbackDays: 0,
-      pivotWindow: 2,
-      swingMinDistancePct: 0.015,
+      pivotWindow: 1,
     });
 
-    expect(levels.rangeHigh).toBe(100);
-    expect(levels.swingHigh).toBeNull();
-    expect(levels.swingLow).toBe(70);
+    expect(levels.rangeHigh).toBe(130);
+    expect(levels.rangeLow).toBe(80);
+    expect(levels.swingHigh).toBe(101);
+    expect(levels.swingLow).toBe(87);
   });
 
   test('returns null for missing swing levels inside the lookback', () => {
@@ -86,6 +82,77 @@ describe('computeLevels', () => {
     expect(levels.rangeLow).toBe(95);
     expect(levels.swingHigh).toBeNull();
     expect(levels.swingLow).toBeNull();
+  });
+
+  test('computes historical levels for active UTC days without future candles', () => {
+    const candles = dailyFixture([
+      [100, 90],
+      [120, 80], // active 2026-05-26 range; not yet a confirmed pivot without future candles
+      [95, 86],
+      [94, 87],
+      [96, 88],
+    ]);
+
+    const history = computeLevelsRange(
+      candles,
+      Date.UTC(2026, 4, 25),
+      Date.UTC(2026, 4, 28),
+      {
+        coin: 'ETH',
+        swingLookbackDays: 0,
+        pivotWindow: 1,
+      },
+    );
+
+    expect(history.map((levels) => levels.forUtcDay)).toEqual(['2026-05-25', '2026-05-26', '2026-05-27', '2026-05-28']);
+    expect(history[1].rangeHigh).toBe(120);
+    expect(history[1].rangeLow).toBe(80);
+    expect(history[1].swingHigh).toBeNull();
+  });
+});
+
+describe('detectTrend', () => {
+  test('detects an uptrend from higher pivot highs and higher pivot lows', () => {
+    expect(detectTrend(dailyFixture([
+      [10, 5],
+      [14, 8],
+      [12, 6],
+      [16, 9],
+      [13, 7],
+      [18, 11],
+      [15, 10],
+      [17, 12],
+    ]), Date.UTC(2026, 5, 1), 1)).toBe('UP');
+  });
+
+  test('detects a downtrend from lower pivot highs and lower pivot lows', () => {
+    expect(detectTrend(dailyFixture([
+      [20, 12],
+      [18, 8],
+      [19, 10],
+      [16, 6],
+      [17, 9],
+      [14, 4],
+      [15, 7],
+      [13, 5],
+    ]), Date.UTC(2026, 5, 1), 1)).toBe('DOWN');
+  });
+
+  test('returns side when structure is mixed or pivots are insufficient', () => {
+    expect(detectTrend(dailyFixture([
+      [10, 5],
+      [14, 8],
+      [12, 6],
+      [16, 7],
+      [13, 4],
+      [15, 9],
+    ]), Date.UTC(2026, 5, 1), 1)).toBe('SIDE');
+
+    expect(detectTrend(dailyFixture([
+      [10, 5],
+      [11, 6],
+      [12, 7],
+    ]), Date.UTC(2026, 5, 1), 1)).toBe('SIDE');
   });
 });
 
@@ -158,6 +225,37 @@ describe('ReversionSignalTracker', () => {
     expect(signal.entry).toBe(97);
     expect(signal.target).toBe(110);
     expect(signal.score).toBeGreaterThanOrEqual(60);
+    expect(signal.trend).toBe('SIDE');
+  });
+
+  test('does not emit a long confirmed signal during a downtrend', () => {
+    const tracker = new ReversionSignalTracker();
+    const levels = { ...testLevels(), trend: 'DOWN' as const };
+    const history = Array.from({ length: 10 }, (_, index) => candle(index, 100, 100.4, 99.8, 100.1));
+
+    const candleA = candle(10, 96, 96.5, 94.95, 95.5);
+    const touches = detectTouch(candleA, levels, { touchTolerance: 0.0008, touchCooldownMinutes: 60 });
+
+    tracker.update(candleA, levels, touches, history, signalOptions('DOWN'));
+    tracker.update(candle(11, 95.6, 97, 95.1, 96.8), levels, [], [...history, candleA], signalOptions('DOWN'));
+    const events = tracker.update(candle(12, 96.7, 97.2, 96.4, 97.1), levels, [], history, signalOptions('DOWN'));
+
+    expect(events).toHaveLength(0);
+  });
+
+  test('does not emit a short confirmed signal during an uptrend', () => {
+    const tracker = new ReversionSignalTracker();
+    const levels = { ...testLevels(), trend: 'UP' as const };
+    const history = Array.from({ length: 10 }, (_, index) => candle(index, 100, 100.4, 99.8, 100.1));
+
+    const candleA = candle(10, 109.4, 110.05, 108.5, 109.5);
+    const touches = detectTouch(candleA, levels, { touchTolerance: 0.0008, touchCooldownMinutes: 60 });
+
+    tracker.update(candleA, levels, touches, history, signalOptions('UP'));
+    tracker.update(candle(11, 109.4, 109.8, 108.7, 108.9), levels, [], [...history, candleA], signalOptions('UP'));
+    const events = tracker.update(candle(12, 108.8, 109, 108.6, 108.7), levels, [], history, signalOptions('UP'));
+
+    expect(events).toHaveLength(0);
   });
 
   test('invalidates a setup when no confirmation appears within the configured window', () => {
@@ -283,12 +381,14 @@ function testLevels(): Levels {
     rangeLow: 95,
     swingHigh: 120,
     swingLow: 80,
+    trend: 'SIDE',
   };
 }
 
-function signalOptions() {
+function signalOptions(trend: 'UP' | 'DOWN' | 'SIDE' = 'SIDE') {
   return {
     confirmWithinCandles: 3,
     stopBuffer: 0.0005,
+    trend,
   };
 }

@@ -9,7 +9,8 @@ export type BacktestExitReason = 'TARGET' | 'STOP' | 'OPEN';
 export interface BacktestOptions {
   coin: string;
   detection: DetectionOptions;
-  signal: SignalOptions;
+  // trend is supplied per-day from each day's computed levels, not by the caller.
+  signal: Omit<SignalOptions, 'trend'>;
   recentCandleLimit?: number;
   recentEventLimit?: number;
   swingLookbackDays?: number;
@@ -84,7 +85,7 @@ export function runBacktest(
       levels,
       touchAndBreakEvents.filter((event) => event.type === 'LEVEL_TOUCH'),
       recentCandles,
-      options.signal,
+      { ...options.signal, trend: levels.trend },
     );
 
     events.push(...touchAndBreakEvents, ...signalEvents);

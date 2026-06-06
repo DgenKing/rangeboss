@@ -31,7 +31,8 @@ export function formatEvent(event: MarketEvent): string {
       ? Math.abs(event.target - event.entry) / Math.abs(event.entry - event.stop)
       : 0;
 
-    return `${event.coin} ${event.direction} signal (score ${event.score ?? 0}) - entry ${fmt(event.entry)}, stop ${fmt(event.stop)}, target ${fmt(event.target)} (R:R ${rr.toFixed(1)})`;
+    const trend = event.trend ? ` (${event.trend} trend)` : '';
+    return `${event.coin} ${event.direction}${trend} signal (score ${event.score ?? 0}) - entry ${fmt(event.entry)}, stop ${fmt(event.stop)}, target ${fmt(event.target)} (R:R ${rr.toFixed(1)})`;
   }
 
   if (event.type === 'LEVEL_TOUCH') {

@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { computeLevelsRange } from '../core/levels';
 import type { Store } from './store';
 
 export type MonitorStatus = {
@@ -49,6 +50,27 @@ export function startApi(store: Store, status: MonitorStatus) {
 
       if (url.pathname === '/api/levels') {
         return json(store.getLatestLevels(resolveCoin(url)));
+      }
+
+      if (url.pathname === '/api/levels/history') {
+        const coin = resolveCoin(url);
+        const dailyCandles = store.getRecentCandles(coin, '1d', config.backfillTarget['1d'] ?? 5000);
+        const bounds = candleBounds(dailyCandles);
+
+        if (!bounds) {
+          return json([]);
+        }
+
+        const from = parseTimestamp(url.searchParams.get('from'), bounds.from);
+        const to = parseTimestamp(url.searchParams.get('to'), bounds.to);
+        const rangeStart = Math.max(Math.min(from, to), bounds.from);
+        const rangeEnd = Math.min(Math.max(from, to), bounds.to);
+
+        return json(computeLevelsRange(dailyCandles, rangeStart, rangeEnd, {
+          coin,
+          swingLookbackDays: config.swingLookbackDays,
+          pivotWindow: config.pivotWindow,
+        }));
       }
 
       if (url.pathname === '/api/candles') {
@@ -159,6 +181,7 @@ function apiIndex(status: MonitorStatus) {
         <li><a href="/api/intervals"><code>/api/intervals</code></a></li>
         <li><a href="/api/status?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/status?coin=…</code></a></li>
         <li><a href="/api/levels?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels?coin=…</code></a></li>
+        <li><a href="/api/levels/history?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels/history?coin=…&from=…&to=…</code></a></li>
         <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m&limit=1500"><code>/api/candles?coin=…&interval=15m&limit=1500</code></a></li>
         <li><a href="/api/events?coin=${encodeURIComponent(status.coins[0] ?? '')}&limit=50"><code>/api/events?coin=…&limit=50</code></a></li>
       </ul>
@@ -170,4 +193,18 @@ function apiIndex(status: MonitorStatus) {
 function clampLimit(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function parseTimestamp(raw: string | null, fallback: number) {
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function candleBounds(candles: Array<{ openTime: number; closeTime: number }>) {
+  if (candles.length === 0) return null;
+  return {
+    from: candles[0].openTime,
+    to: candles[candles.length - 1].closeTime,
+  };
 }

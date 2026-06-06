@@ -1,4 +1,5 @@
 import type { Candle, Levels } from './types';
+import { detectTrend } from './trend';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -7,8 +8,9 @@ export interface ComputeLevelsOptions {
   now?: number;
   swingLookbackDays?: number;
   pivotWindow?: number;
-  swingMinDistancePct?: number;
 }
+
+export type ComputeLevelsRangeOptions = Omit<ComputeLevelsOptions, 'now'>;
 
 export function computeLevels(
   dailyCandles: Candle[],
@@ -17,40 +19,37 @@ export function computeLevels(
     now = Date.now(),
     swingLookbackDays = 90,
     pivotWindow = 2,
-    swingMinDistancePct = 0,
   }: ComputeLevelsOptions,
 ): Levels {
   const candles = [...dailyCandles].sort((a, b) => a.openTime - b.openTime);
   const todayStart = utcDayStart(now);
-  const yesterdayIndex = findYesterdayIndex(candles, todayStart);
+  const completedCandles = candles.filter((candle) => candle.closeTime <= todayStart);
+  const yesterdayIndex = findYesterdayIndex(completedCandles, todayStart);
 
   if (yesterdayIndex < 0) {
     throw new Error('Not enough completed daily candles to compute levels');
   }
 
-  const yesterday = candles[yesterdayIndex];
+  const yesterday = completedCandles[yesterdayIndex];
   const rangeHigh = yesterday.high;
   const rangeLow = yesterday.low;
   // swingLookbackDays <= 0 means "scroll back through ALL available history".
   const earliestOpenTime = swingLookbackDays > 0
     ? yesterday.openTime - swingLookbackDays * DAY_MS
     : -Infinity;
-  // A swing only counts if it is meaningfully beyond the range, not the same peak.
-  const swingHighThreshold = rangeHigh * (1 + swingMinDistancePct);
-  const swingLowThreshold = rangeLow * (1 - swingMinDistancePct);
 
   let swingHigh: number | null = null;
   let swingLow: number | null = null;
 
   for (let i = yesterdayIndex; i >= 0; i -= 1) {
-    if (candles[i].openTime < earliestOpenTime) break;
+    if (completedCandles[i].openTime < earliestOpenTime) break;
 
-    if (swingHigh === null && isPivotHigh(candles, i, pivotWindow) && candles[i].high > rangeHigh && candles[i].high >= swingHighThreshold) {
-      swingHigh = candles[i].high;
+    if (swingHigh === null && isPivotHigh(completedCandles, i, pivotWindow)) {
+      swingHigh = completedCandles[i].high;
     }
 
-    if (swingLow === null && isPivotLow(candles, i, pivotWindow) && candles[i].low < rangeLow && candles[i].low <= swingLowThreshold) {
-      swingLow = candles[i].low;
+    if (swingLow === null && isPivotLow(completedCandles, i, pivotWindow)) {
+      swingLow = completedCandles[i].low;
     }
 
     if (swingHigh !== null && swingLow !== null) break;
@@ -64,7 +63,48 @@ export function computeLevels(
     rangeLow,
     swingHigh,
     swingLow,
+    trend: detectTrend(candles, now, pivotWindow),
   };
+}
+
+export function computeLevelsRange(
+  dailyCandles: Candle[],
+  from: number,
+  to: number,
+  options: ComputeLevelsRangeOptions,
+): Levels[] {
+  const candles = [...dailyCandles].sort((a, b) => a.openTime - b.openTime);
+  if (candles.length === 0) return [];
+
+  const firstLoadedDay = utcDayStart(candles[0].openTime);
+  const fromDay = Math.max(utcDayStart(from), firstLoadedDay);
+  const toDay = utcDayStart(to);
+  const levels: Levels[] = [];
+  let completedThroughIndex = -1;
+
+  for (let day = fromDay; day <= toDay; day += DAY_MS) {
+    while (
+      completedThroughIndex + 1 < candles.length
+      && candles[completedThroughIndex + 1].closeTime <= day
+    ) {
+      completedThroughIndex += 1;
+    }
+
+    const availableCandles = candles.slice(0, completedThroughIndex + 1);
+
+    try {
+      const activeLevels = computeLevels(availableCandles, { ...options, now: day });
+      levels.push({
+        ...activeLevels,
+        computedAt: day,
+        forUtcDay: formatUtcDate(day),
+      });
+    } catch {
+      // Early loaded days may not have a completed prior daily candle yet.
+    }
+  }
+
+  return levels;
 }
 
 export function isPivotHigh(candles: Candle[], index: number, window: number): boolean {

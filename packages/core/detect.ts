@@ -1,4 +1,4 @@
-import type { Candle, LevelName, Levels, MarketEvent, Side } from './types';
+import type { Candle, Direction, LevelName, Levels, MarketEvent, Side, Trend } from './types';
 
 export interface DetectionOptions {
   touchTolerance: number;
@@ -8,6 +8,7 @@ export interface DetectionOptions {
 export interface SignalOptions {
   confirmWithinCandles: number;
   stopBuffer: number;
+  trend: Trend;
 }
 
 type LevelRef = {
@@ -77,6 +78,10 @@ export class ReversionSignalTracker {
     const stillPending: PendingSetup[] = [];
 
     for (const setup of this.pending) {
+      if (!isTouchAllowedByTrend(setup.touch.side, options.trend)) {
+        continue;
+      }
+
       setup.candlesSinceTouch += 1;
 
       if (!setup.confirmation) {
@@ -104,6 +109,10 @@ export class ReversionSignalTracker {
 
     for (const touch of touchEvents) {
       if (touch.type === 'LEVEL_TOUCH') {
+        if (!isTouchAllowedByTrend(touch.side, options.trend)) {
+          continue;
+        }
+
         this.pending.push({
           touch,
           candleA: candle,
@@ -168,7 +177,7 @@ function maybeTriggerSignal(
     const target = setup.touch.levelName === 'rangeLow' ? levels.rangeHigh : levels.swingHigh;
     if (target === null) return null;
 
-    return confirmedEvent(setup, candle, entry, stop, target, recentCandles, 'LONG');
+    return confirmedEvent(setup, candle, entry, stop, target, recentCandles, 'LONG', options.trend);
   }
 
   if (candle.low > confirmation.low) return null;
@@ -178,7 +187,7 @@ function maybeTriggerSignal(
   const target = setup.touch.levelName === 'rangeHigh' ? levels.rangeLow : levels.swingLow;
   if (target === null) return null;
 
-  return confirmedEvent(setup, candle, entry, stop, target, recentCandles, 'SHORT');
+  return confirmedEvent(setup, candle, entry, stop, target, recentCandles, 'SHORT', options.trend);
 }
 
 function confirmedEvent(
@@ -188,7 +197,8 @@ function confirmedEvent(
   stop: number,
   target: number,
   recentCandles: Candle[],
-  direction: 'LONG' | 'SHORT',
+  direction: Direction,
+  trend: Trend,
 ): MarketEvent {
   const score = scoreSignal({
     touch: setup.touch,
@@ -212,8 +222,15 @@ function confirmedEvent(
     stop,
     target,
     score,
+    trend,
     notified: false,
   };
+}
+
+function isTouchAllowedByTrend(side: Side, trend: Trend): boolean {
+  if (trend === 'SIDE') return true;
+  if (trend === 'UP') return side === 'SUPPORT';
+  return side === 'RESISTANCE';
 }
 
 function isConfirmation(side: Side, candleA: Candle, candleB: Candle): boolean {

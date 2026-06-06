@@ -16,12 +16,14 @@ export interface Levels {
   rangeLow: number;
   swingHigh: number | null;
   swingLow: number | null;
+  trend: Trend;
 }
 
 export type EventType = 'LEVEL_TOUCH' | 'LEVEL_BREAK' | 'CONFIRMED_SIGNAL';
 export type Side = 'RESISTANCE' | 'SUPPORT';
 export type Direction = 'LONG' | 'SHORT';
 export type LevelName = 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow';
+export type Trend = 'UP' | 'DOWN' | 'SIDE';
 
 export interface MarketEvent {
   id?: number;
@@ -37,5 +39,6 @@ export interface MarketEvent {
   stop?: number;
   target?: number;
   score?: number;
+  trend?: Trend;
   notified: boolean;
 }

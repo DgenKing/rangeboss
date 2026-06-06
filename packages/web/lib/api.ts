@@ -16,7 +16,10 @@ export type Levels = {
   rangeLow: number;
   swingHigh: number | null;
   swingLow: number | null;
+  trend: Trend;
 };
+
+export type Trend = 'UP' | 'DOWN' | 'SIDE';
 
 export type MarketEvent = {
   id?: number;
@@ -32,6 +35,7 @@ export type MarketEvent = {
   stop?: number;
   target?: number;
   score?: number;
+  trend?: Trend;
   notified: boolean;
 };
 
@@ -74,6 +78,15 @@ export async function getCandles(
 ): Promise<Candle[]> {
   const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
   return fetchJson<Candle[]>(`/api/candles?${q}`);
+}
+
+export async function getLevelsHistory(coin: string, from: number, to: number): Promise<Levels[]> {
+  const params = new URLSearchParams({
+    coin,
+    from: String(from),
+    to: String(to),
+  });
+  return fetchJson<Levels[]>(`/api/levels/history?${params.toString()}`);
 }
 
 // "xyz:SP500" -> "SP500" for display.

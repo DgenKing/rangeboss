@@ -9,10 +9,12 @@ import {
   getCoins,
   getDashboardData,
   getIntervals,
+  getLevelsHistory,
   type Candle,
   type Levels,
   type MarketEvent,
   type Status,
+  type Trend,
 } from '../lib/api';
 import { runBacktest, type BacktestResult, type BacktestTrade } from '../../core/backtest';
 
@@ -54,12 +56,17 @@ const BACKTEST_OPTIONS = {
   signal: { confirmWithinCandles: 3, stopBuffer: 0.0005 },
 };
 
+// Bump this when you ship a change so you can tell which version is live.
+const APP_VERSION = 'v4.0.0';
+
 export default function Page() {
   const [coins, setCoins] = useState<string[]>([]);
   const [intervals, setIntervals] = useState<string[]>([]);
   const [coin, setCoin] = useState<string | null>(null);
   const [activeInterval, setActiveInterval] = useState('15m');
   const [data, setData] = useState<DashboardData>(emptyData);
+  const [showHistory, setShowHistory] = useState(false);
+  const [levelsHistory, setLevelsHistory] = useState<Levels[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>('light');
   const [backtest, setBacktest] = useState<BacktestLoadState>(emptyBacktest);
@@ -194,6 +201,38 @@ export default function Page() {
     };
   }, [coin]);
 
+  const loadedWindow = useMemo(() => {
+    const first = data.candles[0];
+    const last = data.candles.at(-1);
+    if (!first || !last) return null;
+    return { from: first.openTime, to: last.closeTime };
+  }, [data.candles]);
+
+  useEffect(() => {
+    if (!showHistory || !coin || !loadedWindow) {
+      setLevelsHistory([]);
+      return;
+    }
+
+    let alive = true;
+
+    async function loadHistory() {
+      try {
+        const history = await getLevelsHistory(coin!, loadedWindow!.from, loadedWindow!.to);
+        if (alive) setLevelsHistory(history);
+      } catch (caught) {
+        if (!alive) return;
+        setLevelsHistory([]);
+        setError(caught instanceof Error ? caught.message : 'Level history unavailable');
+      }
+    }
+
+    void loadHistory();
+    return () => {
+      alive = false;
+    };
+  }, [showHistory, coin, activeInterval, loadedWindow?.from, loadedWindow?.to]);
+
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
 
@@ -220,14 +259,22 @@ export default function Page() {
       <div className="mx-auto grid max-w-[1600px] gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1fr)_390px]">
         <section className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <LevelStrip levels={data.levels} />
-            <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
+            <div className="flex flex-wrap items-center gap-2">
+              <TrendBadge trend={data.levels?.trend ?? null} />
+              <LevelStrip levels={data.levels} />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <HistoryToggle active={showHistory} onToggle={() => setShowHistory((value) => !value)} />
+              <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
+            </div>
             {error ? <span className="text-sm font-medium text-negative">{error}</span> : null}
           </div>
           <Chart
             key={`${coin ?? 'none'}:${activeInterval}`}
             candles={data.candles}
             levels={data.levels}
+            levelsHistory={levelsHistory}
+            showHistory={showHistory}
             interval={activeInterval}
             theme={theme}
           />
@@ -248,7 +295,27 @@ export default function Page() {
           </div>
         </aside>
       </div>
+
+      <footer className="px-5 py-4 text-center text-xs text-muted">
+        RangeBoss {APP_VERSION}
+      </footer>
     </main>
+  );
+}
+
+function HistoryToggle({ active, onToggle }: { active: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={[
+        'rounded border px-3 py-2 text-sm font-semibold transition-colors',
+        active ? 'border-accent bg-accent text-accentfg' : 'border-line bg-surface2 text-ink hover:bg-bg',
+      ].join(' ')}
+    >
+      History
+    </button>
   );
 }
 
@@ -503,6 +570,24 @@ function BacktestMetric({
   );
 }
 
+function TrendBadge({ trend }: { trend: Trend | null }) {
+  if (!trend) {
+    return <div className="rounded border border-line bg-surface px-3 py-2 text-sm text-muted">Trend pending</div>;
+  }
+
+  const classes: Record<Trend, string> = {
+    UP: 'border-positive/30 bg-positive/10 text-positive',
+    DOWN: 'border-negative/30 bg-negative/10 text-negative',
+    SIDE: 'border-line bg-surface2 text-muted',
+  };
+
+  return (
+    <div className={`rounded border px-3 py-2 text-sm font-semibold ${classes[trend]}`}>
+      {trend}
+    </div>
+  );
+}
+
 function BacktestTradeRow({ trade }: { trade: BacktestTrade }) {
   const isWin = trade.rMultiple > 0;
 
@@ -553,6 +638,7 @@ function EventRow({ event }: { event: MarketEvent }) {
             <Value label="Stop" value={formatPrice(event.stop)} />
             <Value label="Target" value={formatPrice(event.target)} />
             <Value label="Score" value={`${event.score ?? 0}`} />
+            <Value label="Trend" value={event.trend ?? 'n/a'} />
             <Value label="R:R" value={rr === null ? 'n/a' : rr.toFixed(2)} />
           </>
         ) : null}

@@ -3,6 +3,12 @@ import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
 import { calculateIndicatorSeries, latestIndicatorAt, type IndicatorSnapshot } from './indicators';
 import { computeLevels } from './levels';
+import {
+  calculatePortfolioAllocation,
+  portfolioCommonStart,
+  simulatePortfolioTrades,
+  type PortfolioCandidateTrade,
+} from './portfolio';
 import { RegimeAwareStrategyEngine, type RegimeStrategyOptions } from './strategy';
 import type { Candle, Levels, MarketEvent } from './types';
 
@@ -430,6 +436,123 @@ describe('regime-aware strategy', () => {
   });
 });
 
+describe('shared-capital portfolio', () => {
+  test('targets 2% equity risk with 5x leverage and caps margin at 25%', () => {
+    const sized = calculatePortfolioAllocation({
+      equity: 1_000,
+      usedMargin: 0,
+      entry: 100,
+      stop: 90,
+      direction: 'LONG',
+      leverage: 5,
+      riskPerTrade: 0.02,
+      maxPositionMargin: 0.25,
+      maxTotalMargin: 1,
+      feePerSide: 0,
+      slippagePerSide: 0,
+    });
+    const capped = calculatePortfolioAllocation({
+      equity: 1_000,
+      usedMargin: 0,
+      entry: 100,
+      stop: 99,
+      direction: 'LONG',
+      leverage: 5,
+      riskPerTrade: 0.02,
+      maxPositionMargin: 0.25,
+      maxTotalMargin: 1,
+      feePerSide: 0,
+      slippagePerSide: 0,
+    });
+
+    expect(sized.margin).toBeCloseTo(40);
+    expect(sized.notional).toBeCloseTo(200);
+    expect(sized.allocationPct).toBeCloseTo(0.04);
+    expect(capped.margin).toBeCloseTo(250);
+    expect(capped.notional).toBeCloseTo(1_250);
+  });
+
+  test('partially sizes against remaining portfolio margin', () => {
+    const allocation = calculatePortfolioAllocation({
+      equity: 1_000,
+      usedMargin: 900,
+      entry: 100,
+      stop: 99,
+      direction: 'LONG',
+      leverage: 5,
+      riskPerTrade: 0.02,
+      maxPositionMargin: 0.25,
+      maxTotalMargin: 1,
+      feePerSide: 0,
+      slippagePerSide: 0,
+    });
+
+    expect(allocation.margin).toBeCloseTo(100);
+    expect(allocation.notional).toBeCloseTo(500);
+    expect(allocation.status).toBe('PARTIAL');
+  });
+
+  test('prioritizes higher scores when simultaneous signals compete for margin', () => {
+    const result = simulatePortfolioTrades(
+      [
+        portfolioTrade('LOW', 60, 'LONG', 100, 99, 102, 0.02),
+        portfolioTrade('HIGH', 100, 'LONG', 100, 99, 102, 0.02),
+      ],
+      {
+        LOW: [candle(0, 100, 102, 99, 101)],
+        HIGH: [candle(0, 100, 102, 99, 101)],
+      },
+      portfolioOptions({ maxPositionMargin: 1, maxTotalMargin: 0.4 }),
+      candle(0, 100, 102, 99, 101).closeTime,
+      candle(0, 100, 102, 99, 101).closeTime,
+    );
+
+    expect(result.decisions[0].coin).toBe('HIGH');
+    expect(result.decisions[0].status).toBe('ACCEPTED');
+    expect(result.decisions[1].coin).toBe('LOW');
+    expect(result.decisions[1].status).toBe('REJECTED');
+  });
+
+  test('closes isolated positions when margin is exhausted before the stop', () => {
+    const entryCandle = candle(0, 100, 101, 99, 100);
+    const liquidationCandle = candle(1, 100, 101, 79, 82);
+    const result = simulatePortfolioTrades(
+      [portfolioTrade('ETH', 100, 'LONG', 100, 70, 130, -0.3, liquidationCandle.closeTime)],
+      { ETH: [entryCandle, liquidationCandle] },
+      portfolioOptions({ maxPositionMargin: 0.25 }),
+      entryCandle.closeTime,
+      liquidationCandle.closeTime,
+    );
+
+    expect(result.summary.liquidations).toBe(1);
+    expect(result.closedTrades[0].exitReason).toBe('LIQUIDATION');
+    expect(result.summary.finalEquity).toBeLessThan(1_000);
+  });
+
+  test('chooses the first timestamp where every symbol has ready data', () => {
+    const start = portfolioCommonStart([
+      {
+        coin: 'A',
+        strategyCandles: [candle(0, 1, 1, 1, 1)],
+        regimeCandles: hourlyTrend(100, 1),
+        dailyCandles: dailyFixture([[2, 1]]),
+      },
+      {
+        coin: 'B',
+        strategyCandles: [candle(4, 1, 1, 1, 1)],
+        regimeCandles: hourlyTrend(100, 1).map((item) => ({
+          ...item,
+          openTime: item.openTime + FIFTEEN,
+          closeTime: item.closeTime + FIFTEEN,
+        })),
+        dailyCandles: dailyFixture([[2, 1]]),
+      },
+    ]);
+
+    expect(start).toBeGreaterThan(candle(4, 1, 1, 1, 1).openTime);
+  });
+});
+
 function dailyFixture(values: Array<[high: number, low: number]>): Candle[] {
   const firstOpen = Date.UTC(2026, 4, 24);
   return values.map(([high, low], index) => ({
@@ -520,4 +643,49 @@ function hourlyTrend(start: number, step: number): Candle[] {
       volume: 100,
     };
   });
+}
+
+function portfolioOptions(overrides: Partial<Parameters<typeof simulatePortfolioTrades>[2]> = {}) {
+  return {
+    startingCapital: 1_000,
+    leverage: 5,
+    riskPerTrade: 0.02,
+    maxPositionMargin: 0.25,
+    maxTotalMargin: 1,
+    feePerSide: 0,
+    slippagePerSide: 0,
+    ...overrides,
+  };
+}
+
+function portfolioTrade(
+  coin: string,
+  score: number,
+  direction: 'LONG' | 'SHORT',
+  entry: number,
+  stop: number,
+  exitPrice: number,
+  returnPct: number,
+  exitTime = candle(0, entry, entry, entry, entry).closeTime,
+): PortfolioCandidateTrade {
+  const signalTime = candle(0, entry, entry, entry, entry).closeTime;
+  return {
+    coin,
+    direction,
+    strategy: 'TREND_MOMENTUM',
+    regime: direction === 'LONG' ? 'UPTREND' : 'DOWNTREND',
+    levelName: direction === 'LONG' ? 'trendBreakoutHigh' : 'trendBreakoutLow',
+    levelPrice: entry,
+    signalTime,
+    entry,
+    stop,
+    target: exitPrice,
+    exitTime,
+    exitPrice,
+    exitReason: 'TARGET',
+    rMultiple: 1,
+    returnPct,
+    durationCandles: 1,
+    score,
+  };
 }

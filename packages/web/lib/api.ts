@@ -56,6 +56,10 @@ export async function getIntervals(): Promise<string[]> {
   return fetchJson<string[]>('/api/intervals');
 }
 
+export async function getPortfolio(): Promise<PortfolioResult> {
+  return fetchJson<PortfolioResult>('/api/portfolio');
+}
+
 export async function getDashboardData(coin: string, interval: string) {
   const q = `coin=${encodeURIComponent(coin)}`;
   const candlesQ = `${q}&interval=${encodeURIComponent(interval)}&limit=${CHART_CANDLE_LIMIT}`;
@@ -91,3 +95,4 @@ async function fetchJson<T>(path: string): Promise<T> {
 
   return response.json() as Promise<T>;
 }
+import type { PortfolioResult } from '../../core/portfolio';

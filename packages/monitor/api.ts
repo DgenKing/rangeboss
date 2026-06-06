@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { runPortfolioBacktest, type PortfolioResult } from '../core/portfolio';
 import type { Store } from './store';
 
 export type MonitorStatus = {
@@ -8,6 +9,7 @@ export type MonitorStatus = {
 };
 
 export function startApi(store: Store, status: MonitorStatus) {
+  let portfolioCache: { computedAt: number; result: PortfolioResult } | null = null;
   const resolveCoin = (url: URL): string => {
     const requested = url.searchParams.get('coin');
     if (requested) {
@@ -28,7 +30,7 @@ export function startApi(store: Store, status: MonitorStatus) {
 
   const server = Bun.serve({
     port: config.apiPort,
-    fetch(request) {
+    async fetch(request) {
       const url = new URL(request.url);
 
       if (request.method === 'OPTIONS') {
@@ -45,6 +47,16 @@ export function startApi(store: Store, status: MonitorStatus) {
 
       if (url.pathname === '/api/intervals') {
         return json(config.chartIntervals);
+      }
+
+      if (url.pathname === '/api/portfolio') {
+        if (!portfolioCache || Date.now() - portfolioCache.computedAt >= config.portfolio.cacheMs) {
+          portfolioCache = {
+            computedAt: Date.now(),
+            result: buildPortfolio(store, status.coins),
+          };
+        }
+        return json(compactPortfolio(portfolioCache.result));
       }
 
       if (url.pathname === '/api/levels') {
@@ -157,6 +169,7 @@ function apiIndex(status: MonitorStatus) {
       <ul>
         <li><a href="/api/coins"><code>/api/coins</code></a></li>
         <li><a href="/api/intervals"><code>/api/intervals</code></a></li>
+        <li><a href="/api/portfolio"><code>/api/portfolio</code></a></li>
         <li><a href="/api/status?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/status?coin=…</code></a></li>
         <li><a href="/api/levels?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels?coin=…</code></a></li>
         <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m&limit=1500"><code>/api/candles?coin=…&interval=15m&limit=1500</code></a></li>
@@ -165,6 +178,58 @@ function apiIndex(status: MonitorStatus) {
     </main>
   </body>
 </html>`;
+}
+
+function buildPortfolio(store: Store, coins: string[]) {
+  const symbols = coins.map((coin) => ({
+    coin,
+    strategyCandles: store.getRecentCandles(coin, config.candleInterval, config.backfillTarget[config.candleInterval]),
+    regimeCandles: store.getRecentCandles(coin, config.regimeInterval, config.backfillTarget[config.regimeInterval]),
+    dailyCandles: store.getRecentCandles(coin, '1d', config.backfillTarget['1d']),
+  }));
+
+  return runPortfolioBacktest(symbols, {
+    ...config.portfolio,
+    ...config.backtest,
+    regime: config.regime,
+    backtest: {
+      detection: {
+        touchTolerance: config.touchTolerance,
+        touchCooldownMinutes: config.touchCooldownMinutes,
+      },
+      strategy: {
+        detection: {
+          touchTolerance: config.touchTolerance,
+          touchCooldownMinutes: config.touchCooldownMinutes,
+        },
+        rangeSignal: {
+          confirmWithinCandles: config.confirmWithinCandles,
+          stopBuffer: config.stopBuffer,
+        },
+        range: config.range,
+        trend: config.trend,
+      },
+      regime: config.regime,
+      feePerSide: config.backtest.feePerSide,
+      slippagePerSide: config.backtest.slippagePerSide,
+      swingLookbackDays: config.swingLookbackDays,
+      pivotWindow: config.pivotWindow,
+      swingMinDistancePct: config.swingMinDistancePct,
+    },
+  });
+}
+
+function compactPortfolio(result: PortfolioResult): PortfolioResult {
+  const step = Math.max(1, Math.ceil(result.timeline.length / 1_200));
+  const timeline = result.timeline.filter((_, index) => (
+    index === 0 || index === result.timeline.length - 1 || index % step === 0
+  ));
+  return {
+    ...result,
+    timeline,
+    closedTrades: result.closedTrades.slice(-100),
+    decisions: result.decisions.slice(-200),
+  };
 }
 
 function clampLimit(value: number, min: number, max: number) {

@@ -9,16 +9,20 @@ import {
   getCoins,
   getDashboardData,
   getIntervals,
+  getPortfolio,
   type Candle,
   type Levels,
   type MarketEvent,
   type Status,
 } from '../lib/api';
 import { runBacktest, type BacktestResult, type BacktestTrade } from '../../core/backtest';
+import type { PortfolioResult } from '../../core/portfolio';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
+const PortfolioView = dynamic(() => import('../components/PortfolioView'), { ssr: false });
 
 type Theme = 'light' | 'dusk' | 'dark';
+type ActiveView = 'portfolio' | 'symbol';
 
 type DashboardData = {
   levels: Levels | null;
@@ -45,6 +49,14 @@ const emptyBacktest: BacktestLoadState = {
   loading: false,
   error: null,
 };
+
+type PortfolioLoadState = {
+  result: PortfolioResult | null;
+  loading: boolean;
+  error: string | null;
+};
+
+const emptyPortfolio: PortfolioLoadState = { result: null, loading: false, error: null };
 
 const STRATEGY_INTERVAL = '15m';
 const BACKTEST_HISTORY_LIMIT = 5000;
@@ -81,11 +93,13 @@ export default function Page() {
   const [coins, setCoins] = useState<string[]>([]);
   const [intervals, setIntervals] = useState<string[]>([]);
   const [coin, setCoin] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<ActiveView>('portfolio');
   const [activeInterval, setActiveInterval] = useState('15m');
   const [data, setData] = useState<DashboardData>(emptyData);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>('light');
   const [backtest, setBacktest] = useState<BacktestLoadState>(emptyBacktest);
+  const [portfolio, setPortfolio] = useState<PortfolioLoadState>(emptyPortfolio);
 
   // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
   useEffect(() => {
@@ -218,8 +232,32 @@ export default function Page() {
     };
   }, [coin]);
 
+  useEffect(() => {
+    let alive = true;
+    async function loadPortfolio() {
+      setPortfolio((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const result = await getPortfolio();
+        if (alive) setPortfolio({ result, loading: false, error: null });
+      } catch (caught) {
+        if (alive) setPortfolio({
+          result: null,
+          loading: false,
+          error: caught instanceof Error ? caught.message : 'Portfolio unavailable',
+        });
+      }
+    }
+    void loadPortfolio();
+    const interval = setInterval(loadPortfolio, BACKTEST_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
+  const portfolioEquity = portfolio.result?.summary.finalEquity ?? null;
 
   return (
     <main className="min-h-screen bg-bg text-ink">
@@ -232,14 +270,37 @@ export default function Page() {
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <ThemeSelector theme={theme} onSelect={setTheme} />
             <StatusPill healthy={Boolean(data.status?.socketHealthy)} />
-            <Metric label="Price" value={price === null ? 'Waiting' : formatPrice(price)} />
-            <Metric label="Last Candle" value={formatTimes(data.status?.lastCandleTime ?? null)} wide />
+            <Metric
+              label={activeView === 'portfolio' ? 'Portfolio Equity' : 'Price'}
+              value={activeView === 'portfolio'
+                ? portfolioEquity === null ? 'Waiting' : formatUsd(portfolioEquity)
+                : price === null ? 'Waiting' : formatPrice(price)}
+            />
+            <Metric
+              label={activeView === 'portfolio' ? 'Portfolio Through' : 'Last Candle'}
+              value={formatTimes(activeView === 'portfolio' ? portfolio.result?.commonEndTime ?? null : data.status?.lastCandleTime ?? null)}
+              wide
+            />
           </div>
         </div>
       </header>
 
-      <CoinSelector coins={coins} active={coin} onSelect={setCoin} />
+      <CoinSelector
+        coins={coins}
+        active={activeView === 'symbol' ? coin : null}
+        portfolioActive={activeView === 'portfolio'}
+        onPortfolio={() => setActiveView('portfolio')}
+        onSelect={(nextCoin) => {
+          setCoin(nextCoin);
+          setActiveView('symbol');
+        }}
+      />
 
+      {activeView === 'portfolio' ? (
+        <div className="mx-auto max-w-[1600px] px-5 py-5">
+          <PortfolioView result={portfolio.result} loading={portfolio.loading} error={portfolio.error} theme={theme} />
+        </div>
+      ) : (
       <div className="mx-auto grid max-w-[1600px] gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1fr)_390px]">
         <section className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -276,6 +337,7 @@ export default function Page() {
           </div>
         </aside>
       </div>
+      )}
     </main>
   );
 }
@@ -283,10 +345,14 @@ export default function Page() {
 function CoinSelector({
   coins,
   active,
+  portfolioActive,
+  onPortfolio,
   onSelect,
 }: {
   coins: string[];
   active: string | null;
+  portfolioActive: boolean;
+  onPortfolio: () => void;
   onSelect: (coin: string) => void;
 }) {
   if (coins.length === 0) return null;
@@ -294,6 +360,18 @@ function CoinSelector({
   return (
     <nav className="border-b border-line bg-surface">
       <div className="mx-auto flex max-w-[1600px] gap-2 overflow-x-auto px-5 py-3">
+        <button
+          type="button"
+          onClick={onPortfolio}
+          className={[
+            'shrink-0 rounded border px-3 py-1.5 text-sm font-semibold transition-colors',
+            portfolioActive
+              ? 'border-accent bg-accent text-accentfg'
+              : 'border-line bg-surface2 text-ink hover:border-muted',
+          ].join(' ')}
+        >
+          Portfolio
+        </button>
         {coins.map((c) => {
           const isActive = c === active;
           return (
@@ -613,6 +691,10 @@ function Value({ label, value }: { label: string; value: string }) {
 function formatPrice(value: number | undefined) {
   if (value === undefined) return 'n/a';
   return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+function formatUsd(value: number) {
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 }
 
 function formatUtcDateTime(timestamp: number) {

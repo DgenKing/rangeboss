@@ -1,6 +1,7 @@
 import { assertValidConfig, config } from '../../config';
-import { ReversionSignalTracker, detectTouch } from '../core/detect';
+import { calculateIndicatorSeries, latestIndicatorAt } from '../core/indicators';
 import { computeLevels } from '../core/levels';
+import { RegimeAwareStrategyEngine } from '../core/strategy';
 import type { Candle, Levels, MarketEvent } from '../core/types';
 import { startApi } from './api';
 import { fetchCandles, HyperliquidSocket } from './hyperliquid';
@@ -18,11 +19,11 @@ const status = {
   prices: Object.fromEntries(config.coins.map((coin) => [coin, null])) as Record<string, number | null>,
 };
 
-const trackers = new Map<string, ReversionSignalTracker>();
+const engines = new Map<string, RegimeAwareStrategyEngine>();
 const activeLevels = new Map<string, Levels>();
 let nextRestRequestAt = 0;
 for (const coin of config.coins) {
-  trackers.set(coin, new ReversionSignalTracker());
+  engines.set(coin, new RegimeAwareStrategyEngine());
 }
 
 // Start the API first so the dashboard can connect immediately while backfill runs.
@@ -152,34 +153,40 @@ async function handleClosedCandle(coin: string, interval: string, candle: Candle
   const ts = new Date(candle.closeTime).toISOString().slice(5, 16);
   console.log(`[eval] ${coin} ${ts} close=${candle.close} | rangeHigh=${levels.rangeHigh} rangeLow=${levels.rangeLow} swingHigh=${levels.swingHigh} swingLow=${levels.swingLow}`);
 
-  const recentCandles = store.getRecentCandles(coin, config.candleInterval, 40);
+  const recentCandles = store.getRecentCandles(coin, config.candleInterval, 100);
+  const regimeCandles = store.getRecentCandles(coin, config.regimeInterval, 100);
   const recentEvents = store.getRecentEvents(coin, 200);
-
-  const touchAndBreakEvents = detectTouch(
+  const regime = latestIndicatorAt(
+    calculateIndicatorSeries(regimeCandles, config.regime),
+    candle.closeTime,
+  );
+  const engine = engines.get(coin);
+  if (!engine) return;
+  const update = engine.update({
     candle,
     levels,
-    {
-      touchTolerance: config.touchTolerance,
-      touchCooldownMinutes: config.touchCooldownMinutes,
-    },
+    recentCandles,
     recentEvents,
-  );
-
-  const tracker = trackers.get(coin);
-  const signalEvents = tracker
-    ? tracker.update(
-        candle,
-        levels,
-        touchAndBreakEvents.filter((event) => event.type === 'LEVEL_TOUCH'),
-        recentCandles,
-        {
+    regime,
+    options: {
+      detection: {
+        touchTolerance: config.touchTolerance,
+        touchCooldownMinutes: config.touchCooldownMinutes,
+      },
+      rangeSignal: {
           confirmWithinCandles: config.confirmWithinCandles,
           stopBuffer: config.stopBuffer,
-        },
-      )
-    : [];
+      },
+      range: config.range,
+      trend: config.trend,
+    },
+  });
 
-  await persistAndNotify([...touchAndBreakEvents, ...signalEvents]);
+  console.log(`[regime] ${coin} ${regime?.ready ? regime.regime : 'WARMUP'} ADX=${regime?.adx.toFixed(1) ?? '--'} RSI=${regime?.rsi.toFixed(1) ?? '--'} active=${update.hasActiveTrade}`);
+  for (const exit of update.exits) {
+    console.log(`[exit] ${coin} ${exit.signal.strategy} ${exit.signal.direction} ${exit.reason} at ${exit.exitPrice}`);
+  }
+  await persistAndNotify([...update.events, ...update.signals]);
 }
 
 async function persistAndNotify(events: MarketEvent[]) {

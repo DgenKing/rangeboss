@@ -51,7 +51,30 @@ const BACKTEST_HISTORY_LIMIT = 5000;
 const BACKTEST_REFRESH_MS = 60_000;
 const BACKTEST_OPTIONS = {
   detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
-  signal: { confirmWithinCandles: 3, stopBuffer: 0.0005 },
+  strategy: {
+    detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+    rangeSignal: { confirmWithinCandles: 3, stopBuffer: 0.0005 },
+    range: { enabled: true, maxAdx: 12, targetR: 2, minScore: 80 },
+    trend: {
+      breakoutLookback: 40,
+      atrPeriod: 14,
+      atrStopMultiple: 2.5,
+      targetR: 2.5,
+      rsiPeriod: 14,
+      rsiLongMin: 60,
+      rsiShortMax: 40,
+    },
+  },
+  regime: {
+    adxPeriod: 14,
+    adxThreshold: 22,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+    slowEmaSlopeLookback: 10,
+  },
+  feePerSide: 0.00035,
+  slippagePerSide: 0.00015,
+  swingMinDistancePct: 0.015,
 };
 
 export default function Page() {
@@ -162,9 +185,10 @@ export default function Page() {
       setBacktest((current) => ({ ...current, loading: true, error: null }));
 
       try {
-        const [strategyCandles, dailyCandles] = await Promise.all([
+        const [strategyCandles, dailyCandles, regimeCandles] = await Promise.all([
           getCandles(coin!, STRATEGY_INTERVAL, BACKTEST_HISTORY_LIMIT),
           getCandles(coin!, '1d', BACKTEST_HISTORY_LIMIT),
+          getCandles(coin!, '1h', BACKTEST_HISTORY_LIMIT),
         ]);
         if (!alive) return;
 
@@ -172,7 +196,7 @@ export default function Page() {
           result: runBacktest(strategyCandles, dailyCandles, {
             coin: coin!,
             ...BACKTEST_OPTIONS,
-          }),
+          }, regimeCandles),
           loading: false,
           error: null,
         });
@@ -401,6 +425,7 @@ function LevelStrip({ levels }: { levels: Levels | null }) {
 function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLoadState }) {
   const result = state.result;
   const summary = result?.summary;
+  const outOfSample = result?.segments.outOfSample.summary;
   const trades = result?.trades.slice(-5).reverse() ?? [];
 
   return (
@@ -424,12 +449,17 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
 
       <div className="grid gap-3 p-4 lg:grid-cols-[1fr_1.4fr]">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-2">
+          <BacktestMetric label="Regime" value={result?.currentRegime?.ready ? result.currentRegime.regime : 'WARMUP'} />
+          <BacktestMetric label="ADX (1h)" value={result?.currentRegime?.ready ? result.currentRegime.adx.toFixed(1) : '--'} />
+          <BacktestMetric label="RSI (1h)" value={result?.currentRegime?.ready ? result.currentRegime.rsi.toFixed(1) : '--'} />
           <BacktestMetric label="Signals" value={summary ? String(summary.totalTrades) : '--'} />
           <BacktestMetric label="Win Rate" value={summary ? formatPercent(summary.winRate) : '--'} tone={summary && summary.winRate >= 0.5 ? 'positive' : undefined} />
           <BacktestMetric label="Net R" value={summary ? formatR(summary.netR) : '--'} tone={summary && summary.netR >= 0 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Avg R" value={summary ? formatR(summary.averageR) : '--'} tone={summary && summary.averageR >= 0 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Return" value={summary ? formatPercent(summary.totalReturnPct) : '--'} tone={summary && summary.totalReturnPct >= 0 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Open" value={summary ? String(summary.openTrades) : '--'} />
+          <BacktestMetric label="Profit Factor" value={summary ? formatProfitFactor(summary.profitFactor) : '--'} tone={summary && summary.profitFactor >= 1 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Max Drawdown" value={summary ? formatR(-summary.maxDrawdownR) : '--'} tone="negative" />
+          <BacktestMetric label="Holdout Net R" value={outOfSample ? formatR(outOfSample.netR) : '--'} tone={outOfSample && outOfSample.netR >= 0 ? 'positive' : 'negative'} />
+          <BacktestMetric label="Exposure" value={result ? formatPercent(result.exposurePct) : '--'} />
+          <BacktestMetric label="Buy & Hold" value={result ? formatPercent(result.buyHoldReturnPct) : '--'} tone={result && result.buyHoldReturnPct >= 0 ? 'positive' : 'negative'} />
         </div>
 
         <div className="min-w-0 rounded border border-line bg-surface2">
@@ -452,6 +482,7 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
                   <tr>
                     <th className="px-3 py-2 font-medium">Time</th>
                     <th className="px-3 py-2 font-medium">Side</th>
+                    <th className="px-3 py-2 font-medium">Strategy</th>
                     <th className="px-3 py-2 font-medium">Entry</th>
                     <th className="px-3 py-2 font-medium">Exit</th>
                     <th className="px-3 py-2 font-medium">R</th>
@@ -467,7 +498,23 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
           )}
         </div>
       </div>
+      <div className="grid border-t border-line sm:grid-cols-2 lg:grid-cols-4">
+        <BacktestBreakdown label="Range reversion" trades={result?.byStrategy.RANGE_REVERSION.totalTrades} netR={result?.byStrategy.RANGE_REVERSION.netR} />
+        <BacktestBreakdown label="Trend momentum" trades={result?.byStrategy.TREND_MOMENTUM.totalTrades} netR={result?.byStrategy.TREND_MOMENTUM.netR} />
+        <BacktestBreakdown label="First 70%" trades={result?.segments.inSample.summary.totalTrades} netR={result?.segments.inSample.summary.netR} />
+        <BacktestBreakdown label="Last 30%" trades={result?.segments.outOfSample.summary.totalTrades} netR={result?.segments.outOfSample.summary.netR} />
+      </div>
     </section>
+  );
+}
+
+function BacktestBreakdown({ label, trades, netR }: { label: string; trades?: number; netR?: number }) {
+  const tone = netR === undefined ? 'text-muted' : netR >= 0 ? 'text-positive' : 'text-negative';
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 text-sm sm:border-r">
+      <span className="font-medium">{label}</span>
+      <span className={tone}>{trades ?? '--'} trades / {netR === undefined ? '--' : formatR(netR)}</span>
+    </div>
   );
 }
 
@@ -499,6 +546,9 @@ function BacktestTradeRow({ trade }: { trade: BacktestTrade }) {
       <td className={['px-3 py-2 font-semibold', trade.direction === 'LONG' ? 'text-positive' : 'text-negative'].join(' ')}>
         {trade.direction}
       </td>
+      <td className="whitespace-nowrap px-3 py-2 text-xs text-muted">
+        {trade.strategy === 'TREND_MOMENTUM' ? 'Momentum' : 'Range'}
+      </td>
       <td className="whitespace-nowrap px-3 py-2">{formatPrice(trade.entry)}</td>
       <td className="whitespace-nowrap px-3 py-2">
         {formatPrice(trade.exitPrice)}
@@ -524,6 +574,9 @@ function EventRow({ event }: { event: MarketEvent }) {
         <div>
           <div className="text-sm font-semibold">{isSignal ? `${event.direction} Signal` : titleCase(event.type)}</div>
           <div className="text-sm text-muted">{event.levelName} at {formatPrice(event.levelPrice)}</div>
+          {isSignal && event.strategy ? (
+            <div className="mt-1 text-xs uppercase text-muted">{event.strategy.replace('_', ' ')} / {event.regime}</div>
+          ) : null}
         </div>
         <div className="flex items-center gap-1 text-xs text-muted">
           <Clock className="h-3.5 w-3.5" aria-hidden />
@@ -579,6 +632,10 @@ function formatPercent(value: number) {
 function formatR(value: number) {
   const sign = value > 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}R`;
+}
+
+function formatProfitFactor(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : 'INF';
 }
 
 function formatTimes(timestamp: number | null) {

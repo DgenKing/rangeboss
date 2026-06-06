@@ -73,9 +73,9 @@ export class Store {
     const stmt = this.db.prepare(`
       INSERT INTO events
         (type, coin, side, levelName, levelPrice, candleCloseTime, price,
-         direction, entry, stop, target, score, notified, createdAt)
+         direction, entry, stop, target, score, strategy, regime, notified, createdAt)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
 
@@ -93,6 +93,8 @@ export class Store {
         event.stop ?? null,
         event.target ?? null,
         event.score ?? null,
+        event.strategy ?? null,
+        event.regime ?? null,
         event.notified ? 1 : 0,
         Date.now(),
       ) as { id: number };
@@ -130,7 +132,7 @@ export class Store {
   getRecentEvents(coin: string, limit: number): MarketEvent[] {
     const rows = this.db.query(`
       SELECT id, type, coin, side, levelName, levelPrice, candleCloseTime, price,
-             direction, entry, stop, target, score, notified
+             direction, entry, stop, target, score, strategy, regime, notified
       FROM events
       WHERE coin = ?
       ORDER BY candleCloseTime DESC, id DESC
@@ -206,6 +208,8 @@ export class Store {
         stop REAL,
         target REAL,
         score INTEGER,
+        strategy TEXT,
+        regime TEXT,
         notified INTEGER DEFAULT 0,
         createdAt INTEGER
       );
@@ -214,5 +218,13 @@ export class Store {
       DELETE FROM levels WHERE coin IS NULL OR forUtcDay IS NULL;
       DELETE FROM events WHERE coin IS NULL;
     `);
+
+    const eventColumns = this.db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>;
+    if (!eventColumns.some((column) => column.name === 'strategy')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN strategy TEXT;');
+    }
+    if (!eventColumns.some((column) => column.name === 'regime')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN regime TEXT;');
+    }
   }
 }

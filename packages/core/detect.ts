@@ -66,6 +66,10 @@ export function detectTouch(
 export class ReversionSignalTracker {
   private pending: PendingSetup[] = [];
 
+  reset() {
+    this.pending = [];
+  }
+
   update(
     candle: Candle,
     levels: Levels,

@@ -15,6 +15,7 @@ const coins = (process.env.COINS ?? DEFAULT_COINS.join(','))
 export const config = {
   coins,
   candleInterval: '15m',
+  regimeInterval: '1h',
   chartIntervals: ['15m', '1h', '4h', '1d'] as const,
   backfillTarget: {
     '15m': 5000,
@@ -32,6 +33,32 @@ export const config = {
   touchCooldownMinutes: 60,
   confirmWithinCandles: 3,
   stopBuffer: 0.0005,
+  regime: {
+    adxPeriod: 14,
+    adxThreshold: 22,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+    slowEmaSlopeLookback: 10,
+  },
+  trend: {
+    breakoutLookback: 40,
+    atrPeriod: 14,
+    atrStopMultiple: 2.5,
+    targetR: 2.5,
+    rsiPeriod: 14,
+    rsiLongMin: 60,
+    rsiShortMax: 40,
+  },
+  range: {
+    enabled: true,
+    maxAdx: 12,
+    targetR: 2,
+    minScore: 80,
+  },
+  backtest: {
+    feePerSide: 0.00035,
+    slippagePerSide: 0.00015,
+  },
   staleSocketSeconds: 90,
   apiPort: Number(process.env.API_PORT ?? 8787),
   pollMs: 5000,
@@ -51,6 +78,9 @@ export function assertValidConfig() {
 
   if (!config.chartIntervals.includes(config.candleInterval)) {
     throw new Error(`Detection interval ${config.candleInterval} must be listed in chartIntervals.`);
+  }
+  if (!config.chartIntervals.includes(config.regimeInterval)) {
+    throw new Error(`Regime interval ${config.regimeInterval} must be listed in chartIntervals.`);
   }
 
   for (const interval of config.chartIntervals) {

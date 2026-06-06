@@ -21,7 +21,9 @@ export interface Levels {
 export type EventType = 'LEVEL_TOUCH' | 'LEVEL_BREAK' | 'CONFIRMED_SIGNAL';
 export type Side = 'RESISTANCE' | 'SUPPORT';
 export type Direction = 'LONG' | 'SHORT';
-export type LevelName = 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow';
+export type MarketRegime = 'UPTREND' | 'DOWNTREND' | 'RANGE';
+export type StrategyName = 'RANGE_REVERSION' | 'TREND_MOMENTUM';
+export type LevelName = 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow' | 'trendBreakoutHigh' | 'trendBreakoutLow';
 
 export interface MarketEvent {
   id?: number;
@@ -37,5 +39,7 @@ export interface MarketEvent {
   stop?: number;
   target?: number;
   score?: number;
+  strategy?: StrategyName;
+  regime?: MarketRegime;
   notified: boolean;
 }

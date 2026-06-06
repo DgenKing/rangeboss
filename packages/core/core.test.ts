@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
+import { calculateIndicatorSeries, latestIndicatorAt, type IndicatorSnapshot } from './indicators';
 import { computeLevels } from './levels';
+import { RegimeAwareStrategyEngine, type RegimeStrategyOptions } from './strategy';
 import type { Candle, Levels, MarketEvent } from './types';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -246,6 +248,186 @@ describe('runBacktest', () => {
     expect(result.trades).toHaveLength(1);
     expect(result.trades[0].target).toBe(110);
   });
+
+  test('deducts trading friction and reports evidence metrics', () => {
+    const dailyCandles = dailyFixture([
+      [100, 80], [110, 84], [108, 82], [130, 81], [112, 83],
+      [109, 78], [115, 86], [111, 85], [107, 88], [110, 95],
+    ]);
+    const strategyCandles = [
+      candle(0, 100, 100.4, 99.8, 100.1),
+      candle(1, 96, 96.5, 94.95, 95.5),
+      candle(2, 95.6, 97, 95.1, 96.8),
+      candle(3, 96.7, 97.2, 96.4, 97.1),
+      candle(4, 97.2, 110.5, 97, 110.2),
+    ];
+    const base = {
+      coin: 'ETH',
+      detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+      signal: signalOptions(),
+    };
+
+    const frictionless = runBacktest(strategyCandles, dailyCandles, base);
+    const realistic = runBacktest(strategyCandles, dailyCandles, {
+      ...base,
+      feePerSide: 0.00035,
+      slippagePerSide: 0.00015,
+    });
+
+    expect(realistic.summary.netR).toBeLessThan(frictionless.summary.netR);
+    expect(realistic.summary.profitFactor).toBeGreaterThan(1);
+    expect(realistic.summary.maxDrawdownR).toBe(0);
+    expect(realistic.segments.outOfSample.label).toBe('Last 30%');
+  });
+});
+
+describe('regime-aware strategy', () => {
+  test('classifies sustained directional hourly markets and flat markets', () => {
+    const rising = hourlyTrend(100, 1);
+    const falling = hourlyTrend(200, -1);
+    const flat = hourlyTrend(100, 0);
+
+    expect(calculateIndicatorSeries(rising).at(-1)?.regime).toBe('UPTREND');
+    expect(calculateIndicatorSeries(falling).at(-1)?.regime).toBe('DOWNTREND');
+    expect(calculateIndicatorSeries(flat).at(-1)?.regime).toBe('RANGE');
+  });
+
+  test('uses only an already-closed hourly regime candle', () => {
+    const series = calculateIndicatorSeries(hourlyTrend(100, 1));
+    const target = series[80];
+
+    expect(latestIndicatorAt(series, target.candleCloseTime - 1)?.candleCloseTime)
+      .toBe(series[79].candleCloseTime);
+    expect(latestIndicatorAt(series, target.candleCloseTime)?.candleCloseTime)
+      .toBe(target.candleCloseTime);
+  });
+
+  test('suppresses range-reversion entries outside range regime', () => {
+    const engine = new RegimeAwareStrategyEngine();
+    const history = Array.from({ length: 45 }, (_, index) => candle(index, 100, 100.4, 99.8, 100.1));
+    const touch = candle(45, 96, 96.5, 94.95, 95.5);
+    const confirmation = candle(46, 95.6, 97, 95.1, 96.8);
+    const trigger = candle(47, 96.7, 97.2, 96.4, 97.1);
+    const options = strategyOptions();
+    const regime = indicator('UPTREND');
+
+    expect(engine.update({
+      candle: touch,
+      levels: testLevels(),
+      recentCandles: [...history, touch],
+      recentEvents: [],
+      regime,
+      options,
+    }).signals).toHaveLength(0);
+    expect(engine.update({
+      candle: confirmation,
+      levels: testLevels(),
+      recentCandles: [...history, touch, confirmation],
+      recentEvents: [],
+      regime,
+      options,
+    }).signals).toHaveLength(0);
+    expect(engine.update({
+      candle: trigger,
+      levels: testLevels(),
+      recentCandles: [...history, touch, confirmation, trigger],
+      recentEvents: [],
+      regime,
+      options,
+    }).signals).toHaveLength(0);
+  });
+
+  test('requires a quiet high-score range and caps its target', () => {
+    const history = Array.from({ length: 45 }, (_, index) => candle(index, 100, 100.4, 99.8, 100.1));
+    const touch = candle(45, 96, 96.5, 94.95, 95.5);
+    const confirmation = candle(46, 95.6, 97, 95.1, 96.8);
+    const trigger = candle(47, 96.7, 97.2, 96.4, 97.1);
+    const options = strategyOptions();
+    options.range = { enabled: true, maxAdx: 12, targetR: 2, minScore: 80 };
+
+    const engine = new RegimeAwareStrategyEngine();
+    const quietRange = { ...indicator('RANGE'), adx: 10 };
+    engine.update({ candle: touch, levels: testLevels(), recentCandles: [...history, touch], recentEvents: [], regime: quietRange, options });
+    engine.update({ candle: confirmation, levels: testLevels(), recentCandles: [...history, touch, confirmation], recentEvents: [], regime: quietRange, options });
+    const update = engine.update({ candle: trigger, levels: testLevels(), recentCandles: [...history, touch, confirmation, trigger], recentEvents: [], regime: quietRange, options });
+
+    expect(update.signals).toHaveLength(1);
+    expect(update.signals[0].target).toBeCloseTo(101.19495);
+  });
+
+  test('enters a trend breakout on the next candle and blocks overlapping entries', () => {
+    const engine = new RegimeAwareStrategyEngine();
+    const history = Array.from({ length: 45 }, (_, index) => (
+      candle(index, 100 + index * 0.1, 100.5 + index * 0.1, 99.7 + index * 0.1, 100.3 + index * 0.1)
+    ));
+    const breakout = candle(45, 105, 108, 104.8, 107.8);
+    const entryCandle = candle(46, 108, 108.5, 107.5, 108.2);
+    const anotherBreakout = candle(47, 108.2, 110, 108, 109.8);
+    const options = strategyOptions();
+    const regime = indicator('UPTREND');
+
+    const setup = engine.update({
+      candle: breakout,
+      levels: testLevels(),
+      recentCandles: [...history, breakout],
+      recentEvents: [],
+      regime,
+      options,
+    });
+    expect(setup.signals).toHaveLength(0);
+
+    const entry = engine.update({
+      candle: entryCandle,
+      levels: testLevels(),
+      recentCandles: [...history, breakout, entryCandle],
+      recentEvents: [],
+      regime,
+      options,
+    });
+    expect(entry.signals).toHaveLength(1);
+    expect(entry.signals[0].strategy).toBe('TREND_MOMENTUM');
+    expect(entry.signals[0].direction).toBe('LONG');
+
+    const blocked = engine.update({
+      candle: anotherBreakout,
+      levels: testLevels(),
+      recentCandles: [...history, breakout, entryCandle, anotherBreakout],
+      recentEvents: [],
+      regime,
+      options,
+    });
+    expect(blocked.signals).toHaveLength(0);
+    expect(blocked.hasActiveTrade).toBe(true);
+  });
+
+  test('cancels a queued trend breakout when the regime flips before entry', () => {
+    const engine = new RegimeAwareStrategyEngine();
+    const history = Array.from({ length: 45 }, (_, index) => (
+      candle(index, 100 + index, 101 + index, 99 + index, 100.8 + index)
+    ));
+    const breakout = candle(45, 145, 151, 144, 150);
+    const options = strategyOptions();
+
+    engine.update({
+      candle: breakout,
+      levels: testLevels(),
+      recentCandles: [...history, breakout],
+      recentEvents: [],
+      regime: indicator('UPTREND'),
+      options,
+    });
+    const cancelled = engine.update({
+      candle: candle(46, 150, 151, 148, 149),
+      levels: testLevels(),
+      recentCandles: [...history, breakout, candle(46, 150, 151, 148, 149)],
+      recentEvents: [],
+      regime: indicator('RANGE'),
+      options,
+    });
+
+    expect(cancelled.signals).toHaveLength(0);
+    expect(cancelled.hasActiveTrade).toBe(false);
+  });
 });
 
 function dailyFixture(values: Array<[high: number, low: number]>): Candle[] {
@@ -291,4 +473,51 @@ function signalOptions() {
     confirmWithinCandles: 3,
     stopBuffer: 0.0005,
   };
+}
+
+function strategyOptions(): RegimeStrategyOptions {
+  return {
+    detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
+    rangeSignal: signalOptions(),
+    range: { enabled: true, maxAdx: 18, targetR: 2, minScore: 60 },
+    trend: {
+      breakoutLookback: 40,
+      atrPeriod: 14,
+      atrStopMultiple: 2,
+      targetR: 3,
+      rsiPeriod: 14,
+      rsiLongMin: 55,
+      rsiShortMax: 45,
+    },
+  };
+}
+
+function indicator(regime: IndicatorSnapshot['regime']): IndicatorSnapshot {
+  return {
+    candleCloseTime: now,
+    ready: true,
+    emaFast: regime === 'UPTREND' ? 110 : 90,
+    emaSlow: 100,
+    atr: 2,
+    rsi: regime === 'DOWNTREND' ? 40 : 60,
+    adx: regime === 'RANGE' ? 15 : 30,
+    regime,
+  };
+}
+
+function hourlyTrend(start: number, step: number): Candle[] {
+  const hour = 60 * 60 * 1000;
+  return Array.from({ length: 100 }, (_, index) => {
+    const close = start + index * step;
+    const openTime = Date.UTC(2026, 0, 1) + index * hour;
+    return {
+      openTime,
+      closeTime: openTime + hour,
+      open: close - step * 0.5,
+      high: close + 0.5,
+      low: close - 0.5,
+      close,
+      volume: 100,
+    };
+  });
 }

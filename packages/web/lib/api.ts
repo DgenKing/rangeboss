@@ -23,7 +23,7 @@ export type MarketEvent = {
   type: 'LEVEL_TOUCH' | 'LEVEL_BREAK' | 'CONFIRMED_SIGNAL';
   coin: string;
   side: 'RESISTANCE' | 'SUPPORT';
-  levelName: 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow';
+  levelName: 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow' | 'trendBreakoutHigh' | 'trendBreakoutLow';
   levelPrice: number;
   candleCloseTime: number;
   price: number;
@@ -32,6 +32,8 @@ export type MarketEvent = {
   stop?: number;
   target?: number;
   score?: number;
+  strategy?: 'RANGE_REVERSION' | 'TREND_MOMENTUM';
+  regime?: 'UPTREND' | 'DOWNTREND' | 'RANGE';
   notified: boolean;
 };
 
